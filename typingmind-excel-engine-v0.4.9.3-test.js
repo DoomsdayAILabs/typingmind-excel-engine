@@ -1,32 +1,37 @@
 /*
- * TypingMind Excel Data Engine - Extension v0.4.9.3 TEST
+ * TypingMind Excel Data Engine
+ * Extension v0.4.9.3 TEST
  *
- * OBJETIVO:
- * - Excel local en navegador
- * - SheetJS para lectura XLSX
+ * OBJETIVO
+ * --------
+ * Procesamiento local de archivos Excel mediante:
+ *
+ * XLSX -> JavaScript -> DuckDB-Wasm -> SQL
+ *
+ * El archivo Excel NO se envía al modelo.
+ *
+ * v0.4.9.3
+ *
+ * CAMBIOS:
+ * - Corrige consulta pragma_version()
  * - DuckDB-Wasm 1.29.0
- * - Tabla local: excel_data
+ * - DuckDB interno 1.1.1
+ * - Serialización segura de BIGINT
+ * - Lectura local XLSX
+ * - Detección de filas reales
+ * - Inferencia de tipos
+ * - Creación de excel_data
+ * - COUNT
+ * - Preview
+ * - Resumen
+ * - Total por año
  * - SQL manual
- * - Normalización robusta de resultados
- *
- * CORRECCIÓN PRINCIPAL v0.4.9.3:
- * - Convierte correctamente BigInt
- * - Convierte TypedArrays
- * - Convierte objetos Arrow/vectoriales
- * - Evita resultados como:
- *      "total": [1535012, 0, 0, 0]
- * - Resultado esperado:
- *      "total": 1535012
- *
- * TODO EL PROCESAMIENTO ES LOCAL.
  */
 
 (() => {
   "use strict";
 
   const APP_ID = "tm-excel-engine-v0493-test";
-
-  const VERSION = "v0.4.9.3 TEST";
 
   const DUCKDB_PACKAGE =
     "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
@@ -38,242 +43,628 @@
   let db = null;
   let conn = null;
 
+  let workbook = null;
   let currentFile = null;
-  let currentRows = [];
-  let currentHeaders = [];
-  let currentSheetName = null;
-  let currentSchema = [];
-  let currentTypeInfo = [];
+
+  let tableName = "excel_data";
+  let headers = [];
+  let rows = [];
+  let inferredTypes = [];
+
+  let initialized = false;
 
   /*
-   * ============================================================
+   * ------------------------------------------------------------
    * UTILIDADES
-   * ============================================================
+   * ------------------------------------------------------------
    */
 
-  function isTypedArray(value) {
-    return (
-      value != null &&
-      typeof value === "object" &&
-      ArrayBuffer.isView(value) &&
-      !(value instanceof DataView)
-    );
+  function $(id) {
+    return document.getElementById(id);
   }
 
-  function isNumericKey(key) {
-    return /^\d+$/.test(String(key));
-  }
+  function safeString(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
 
-  function normalizeValue(value, depth = 0) {
+    if (typeof value === "string") {
+      return value;
+    }
 
-    if (depth > 12) {
+    if (typeof value === "number") {
+      if (Number.isNaN(value)) return null;
+      if (!Number.isFinite(value)) return String(value);
       return String(value);
     }
 
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+
+    return String(value);
+  }
+
+  /*
+   * Convierte resultados de DuckDB a valores JSON seguros.
+   *
+   * Esto corrige casos como:
+   *
+   * [1535012,0,0,0]
+   *
+   * cuando DuckDB-Wasm devuelve ciertos BIGINT.
+   */
+
+  function normalizeValue(value) {
     if (value === null || value === undefined) {
       return value;
     }
 
-    /*
-     * BigInt
-     */
     if (typeof value === "bigint") {
       const n = Number(value);
 
-      if (Number.isSafeInteger(n)) {
+      if (
+        Number.isSafeInteger(n) &&
+        String(n) === value.toString()
+      ) {
         return n;
       }
 
       return value.toString();
     }
 
-    /*
-     * Fechas
-     */
     if (value instanceof Date) {
       return value.toISOString();
     }
 
-    /*
-     * TypedArray
-     *
-     * Ejemplo problemático:
-     * Uint32Array [1535012,0,0,0]
-     *
-     * Si representa un valor escalar de 4 bytes,
-     * intentamos recuperar el valor correcto.
-     */
-    if (isTypedArray(value)) {
-
+    if (ArrayBuffer.isView(value)) {
       /*
-       * Si tiene un solo elemento, devolverlo directamente.
+       * Algunos resultados de DuckDB-Wasm pueden aparecer
+       * como TypedArray.
        */
-      if (value.length === 1) {
-        return normalizeValue(value[0], depth + 1);
-      }
 
-      /*
-       * Algunos resultados Arrow/Decimal pueden llegar
-       * como bloques de 4 posiciones.
-       *
-       * Si solamente el primer elemento tiene información
-       * y los demás son cero, tratamos el primero como escalar.
-       */
       if (
         value.length === 4 &&
         Number(value[1]) === 0 &&
         Number(value[2]) === 0 &&
         Number(value[3]) === 0
       ) {
-        return normalizeValue(value[0], depth + 1);
+        return normalizeValue(value[0]);
       }
 
-      return Array.from(value).map(v =>
-        normalizeValue(v, depth + 1)
-      );
+      return Array.from(value).map(normalizeValue);
     }
 
-    /*
-     * Array normal
-     */
     if (Array.isArray(value)) {
-
       /*
-       * Si llega un array de cuatro posiciones
-       * con solamente el primer valor utilizado,
-       * normalizarlo como escalar.
+       * Caso especial observado:
+       *
+       * [1535012, 0, 0, 0]
+       *
+       * Lo interpretamos como un valor escalar
+       * cuando solamente el primer elemento contiene datos.
        */
+
       if (
         value.length === 4 &&
-        Number(value[1]) === 0 &&
-        Number(value[2]) === 0 &&
-        Number(value[3]) === 0
+        value.slice(1).every(v => {
+          return Number(v) === 0;
+        })
       ) {
-        return normalizeValue(value[0], depth + 1);
+        return normalizeValue(value[0]);
       }
 
-      return value.map(v =>
-        normalizeValue(v, depth + 1)
-      );
+      return value.map(normalizeValue);
     }
 
-    /*
-     * Objetos especiales / Arrow.
-     */
     if (typeof value === "object") {
-
-      const keys = Object.keys(value);
-
-      /*
-       * Detectar objeto tipo:
-       *
-       * {
-       *   "0": 1535012,
-       *   "1": 0,
-       *   "2": 0,
-       *   "3": 0
-       * }
-       */
-      if (
-        keys.length === 4 &&
-        keys.every(isNumericKey)
-      ) {
-
-        const ordered = keys
-          .sort((a, b) => Number(a) - Number(b))
-          .map(k => value[k]);
-
-        if (
-          Number(ordered[1]) === 0 &&
-          Number(ordered[2]) === 0 &&
-          Number(ordered[3]) === 0
-        ) {
-          return normalizeValue(
-            ordered[0],
-            depth + 1
-          );
-        }
-
-        return ordered.map(v =>
-          normalizeValue(v, depth + 1)
-        );
-      }
-
-      /*
-       * Detectar objetos con toJSON.
-       */
-      if (
-        typeof value.toJSON === "function"
-      ) {
-        try {
-          return normalizeValue(
-            value.toJSON(),
-            depth + 1
-          );
-        } catch (_) {}
-      }
-
-      /*
-       * Objeto normal.
-       */
       const result = {};
 
-      for (const key of keys) {
-        result[key] =
-          normalizeValue(
-            value[key],
-            depth + 1
-          );
+      for (const key of Object.keys(value)) {
+        result[key] = normalizeValue(value[key]);
       }
 
       return result;
     }
 
-    /*
-     * Números, strings y booleanos.
-     */
     return value;
   }
 
-  function normalizeRows(rows) {
+  function rowsToObjects(result) {
+    if (!result) return [];
 
-    if (!Array.isArray(rows)) {
-      rows = Array.from(rows || []);
-    }
+    const rawRows = result.toArray();
 
-    return rows.map(row =>
-      normalizeValue(row)
-    );
+    return rawRows.map(row => {
+      const normalized = {};
+
+      for (const key of Object.keys(row)) {
+        normalized[key] = normalizeValue(row[key]);
+      }
+
+      return normalized;
+    });
   }
 
-  function safeJSONStringify(value) {
-
+  function stringifySafe(value) {
     return JSON.stringify(
       normalizeValue(value),
-      (key, val) => {
-
-        if (typeof val === "bigint") {
-          const n = Number(val);
-
-          return Number.isSafeInteger(n)
-            ? n
-            : val.toString();
-        }
-
-        return val;
-      },
+      null,
       2
     );
   }
 
   /*
-   * ============================================================
+   * Escapa identificadores SQL.
+   *
+   * Ejemplo:
+   * Total TEU's
+   *
+   * se convierte en:
+   * "Total TEU's"
+   */
+
+  function quoteIdentifier(name) {
+    return `"${String(name).replace(/"/g, '""')}"`;
+  }
+
+  /*
+   * Escapa valores para SQL.
+   */
+
+  function sqlLiteral(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      value === ""
+    ) {
+      return "NULL";
+    }
+
+    if (value instanceof Date) {
+      const iso =
+        value.toISOString().slice(0, 10);
+
+      return `DATE '${iso}'`;
+    }
+
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) {
+        return "NULL";
+      }
+
+      return String(value);
+    }
+
+    if (typeof value === "bigint") {
+      return value.toString();
+    }
+
+    const text = String(value)
+      .replace(/\\/g, "\\\\")
+      .replace(/'/g, "''");
+
+    return `'${text}'`;
+  }
+
+  /*
+   * Normaliza nombres de columnas duplicados.
+   */
+
+  function normalizeHeaders(rawHeaders) {
+    const used = new Map();
+
+    return rawHeaders.map((header, index) => {
+      let name =
+        header === null ||
+        header === undefined ||
+        String(header).trim() === ""
+          ? `Column_${index + 1}`
+          : String(header).trim();
+
+      const base = name;
+
+      const count =
+        used.get(base) || 0;
+
+      if (count > 0) {
+        name = `${base}_${count + 1}`;
+      }
+
+      used.set(base, count + 1);
+
+      return name;
+    });
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * FECHAS
+   * ------------------------------------------------------------
+   */
+
+  function excelSerialToDate(serial) {
+    if (
+      typeof serial !== "number" ||
+      !Number.isFinite(serial)
+    ) {
+      return null;
+    }
+
+    /*
+     * Excel usa 1899-12-30 como referencia práctica
+     * para el sistema de fechas 1900.
+     */
+
+    const epoch =
+      Date.UTC(1899, 11, 30);
+
+    const ms =
+      epoch +
+      Math.round(serial * 86400000);
+
+    return new Date(ms);
+  }
+
+  function isDateHeader(header) {
+    const h =
+      String(header)
+        .toLowerCase()
+        .trim();
+
+    return (
+      h.includes("fecha") ||
+      h.includes("date") ||
+      h.includes("día") ||
+      h.includes("dia")
+    );
+  }
+
+  function normalizeDateValue(value) {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      if (Number.isNaN(value.getTime())) {
+        return null;
+      }
+
+      return value;
+    }
+
+    if (typeof value === "number") {
+      return excelSerialToDate(value);
+    }
+
+    const text =
+      String(value).trim();
+
+    if (!text) return null;
+
+    /*
+     * ISO
+     */
+
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) {
+      const d = new Date(`${text}T00:00:00Z`);
+
+      if (!Number.isNaN(d.getTime())) {
+        return d;
+      }
+    }
+
+    /*
+     * DD/MM/YYYY
+     */
+
+    let match =
+      text.match(
+        /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+      );
+
+    if (match) {
+      const day = Number(match[1]);
+      const month = Number(match[2]) - 1;
+      const year = Number(match[3]);
+
+      const d =
+        new Date(
+          Date.UTC(
+            year,
+            month,
+            day
+          )
+        );
+
+      if (!Number.isNaN(d.getTime())) {
+        return d;
+      }
+    }
+
+    /*
+     * MM/DD/YYYY
+     *
+     * Se intenta únicamente como fallback.
+     */
+
+    match =
+      text.match(
+        /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+      );
+
+    if (match) {
+      const month = Number(match[1]) - 1;
+      const day = Number(match[2]);
+      const year = Number(match[3]);
+
+      const d =
+        new Date(
+          Date.UTC(
+            year,
+            month,
+            day
+          )
+        );
+
+      if (!Number.isNaN(d.getTime())) {
+        return d;
+      }
+    }
+
+    return null;
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * INFERENCIA DE TIPOS
+   * ------------------------------------------------------------
+   */
+
+  function isIntegerLike(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      return false;
+    }
+
+    if (typeof value === "number") {
+      return Number.isInteger(value);
+    }
+
+    return /^[-+]?\d+$/.test(
+      String(value).trim()
+    );
+  }
+
+  function isNumberLike(value) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      return false;
+    }
+
+    if (typeof value === "number") {
+      return Number.isFinite(value);
+    }
+
+    const text =
+      String(value)
+        .trim()
+        .replace(/,/g, "");
+
+    return (
+      text !== "" &&
+      Number.isFinite(Number(text))
+    );
+  }
+
+  function inferColumnType(
+    columnIndex,
+    columnName,
+    dataRows
+  ) {
+    const values =
+      dataRows
+        .map(row => row[columnIndex])
+        .filter(
+          value =>
+            value !== null &&
+            value !== undefined &&
+            String(value).trim() !== ""
+        );
+
+    const nonEmpty =
+      values.length;
+
+    if (nonEmpty === 0) {
+      return {
+        column_index: columnIndex,
+        column_name: columnName,
+        duckdb_type: "VARCHAR",
+        sqlType: "VARCHAR",
+        confidence: "low",
+        reason: "columna sin valores",
+        non_empty_values: 0
+      };
+    }
+
+    /*
+     * FECHA
+     */
+
+    if (
+      isDateHeader(columnName)
+    ) {
+      let validDates = 0;
+
+      for (const value of values) {
+        if (
+          normalizeDateValue(value)
+        ) {
+          validDates++;
+        }
+      }
+
+      if (
+        validDates === nonEmpty
+      ) {
+        return {
+          column_index: columnIndex,
+          column_name: columnName,
+          duckdb_type: "DATE",
+          sqlType: "DATE",
+          confidence: "high",
+          reason:
+            "encabezado y valores compatibles con fecha",
+          non_empty_values: nonEmpty
+        };
+      }
+    }
+
+    /*
+     * INTEGER
+     */
+
+    if (
+      values.every(
+        isIntegerLike
+      )
+    ) {
+      return {
+        column_index: columnIndex,
+        column_name: columnName,
+        duckdb_type: "BIGINT",
+        sqlType: "BIGINT",
+        confidence: "high",
+        reason:
+          "todos los valores son enteros",
+        non_empty_values: nonEmpty
+      };
+    }
+
+    /*
+     * DOUBLE
+     */
+
+    if (
+      values.every(
+        isNumberLike
+      )
+    ) {
+      return {
+        column_index: columnIndex,
+        column_name: columnName,
+        duckdb_type: "DOUBLE",
+        sqlType: "DOUBLE",
+        confidence: "medium",
+        reason:
+          "valores numéricos compatibles con decimal",
+        non_empty_values: nonEmpty
+      };
+    }
+
+    /*
+     * TEXTO
+     */
+
+    return {
+      column_index: columnIndex,
+      column_name: columnName,
+      duckdb_type: "VARCHAR",
+      sqlType: "VARCHAR",
+      confidence: "medium",
+      reason:
+        "valores tratados como texto",
+      non_empty_values: nonEmpty
+    };
+  }
+
+  function inferTypes() {
+    inferredTypes =
+      headers.map(
+        (header, index) =>
+          inferColumnType(
+            index,
+            header,
+            rows
+          )
+      );
+
+    return inferredTypes;
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * PREPARACIÓN DE VALORES
+   * ------------------------------------------------------------
+   */
+
+  function prepareValue(
+    value,
+    type
+  ) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      return null;
+    }
+
+    if (type === "DATE") {
+      const date =
+        normalizeDateValue(value);
+
+      if (!date) return null;
+
+      return date;
+    }
+
+    if (type === "BIGINT") {
+      const text =
+        String(value)
+          .trim()
+          .replace(/,/g, "");
+
+      if (!/^[-+]?\d+$/.test(text)) {
+        return null;
+      }
+
+      return BigInt(text);
+    }
+
+    if (type === "DOUBLE") {
+      const n =
+        Number(
+          String(value)
+            .trim()
+            .replace(/,/g, "")
+        );
+
+      return Number.isFinite(n)
+        ? n
+        : null;
+    }
+
+    return String(value);
+  }
+
+  /*
+   * ------------------------------------------------------------
    * ESTILOS
-   * ============================================================
+   * ------------------------------------------------------------
    */
 
   function addStyles() {
-
     if (
       document.getElementById(
         "tmxe-v0493-style"
@@ -283,7 +674,9 @@
     }
 
     const style =
-      document.createElement("style");
+      document.createElement(
+        "style"
+      );
 
     style.id =
       "tmxe-v0493-style";
@@ -318,10 +711,9 @@
         z-index: 2147483001;
 
         background:
-          rgba(0,0,0,.55);
+          rgba(0,0,0,.48);
 
         display: flex;
-
         align-items: center;
         justify-content: center;
 
@@ -329,7 +721,7 @@
       }
 
       #tmxe-v0493-panel {
-        width: min(1100px, 96vw);
+        width: min(1050px, 97vw);
         max-height: 92vh;
 
         overflow: auto;
@@ -356,14 +748,16 @@
       }
 
       #tmxe-v0493-panel h2 {
-        margin: 0;
-        font-size: 20px;
+        margin:
+          0 0 4px;
+
+        font-size:
+          20px;
       }
 
       #tmxe-v0493-help {
         opacity: .7;
-        margin-top: 4px;
-        margin-bottom: 15px;
+        margin-bottom: 14px;
       }
 
       #tmxe-v0493-status {
@@ -374,7 +768,8 @@
         background:
           rgba(127,127,127,.10);
 
-        white-space: pre-wrap;
+        white-space:
+          pre-wrap;
 
         font:
           13px/1.5
@@ -383,7 +778,8 @@
           Menlo,
           monospace;
 
-        margin-bottom: 12px;
+        margin-bottom:
+          12px;
       }
 
       #tmxe-v0493-status[data-kind="ok"] {
@@ -394,44 +790,105 @@
         color: #dc2626;
       }
 
+      #tmxe-v0493-actions,
+      #tmxe-v0493-sql-actions {
+        display:
+          flex;
+
+        gap:
+          8px;
+
+        flex-wrap:
+          wrap;
+
+        margin:
+          10px 0;
+      }
+
+      #tmxe-v0493-panel button {
+        border:
+          1px solid
+          rgba(127,127,127,.45);
+
+        border-radius:
+          9px;
+
+        padding:
+          9px 13px;
+
+        background:
+          transparent;
+
+        color:
+          inherit;
+
+        cursor:
+          pointer;
+      }
+
+      #tmxe-v0493-load,
+      #tmxe-v0493-run-sql {
+        background:
+          #7c3aed !important;
+
+        color:
+          white !important;
+
+        border-color:
+          #7c3aed !important;
+      }
+
       #tmxe-v0493-file {
-        display: none;
+        display:
+          none;
       }
 
-      #tmxe-v0493-load {
-        border: 0;
-        border-radius: 9px;
-
-        padding: 10px 15px;
-
-        background: #7c3aed;
-        color: white;
-
-        cursor: pointer;
-
-        font-weight: 600;
-      }
-
-      #tmxe-v0493-sql {
-        width: 100%;
-        min-height: 180px;
-
-        box-sizing: border-box;
-
-        resize: vertical;
-
-        padding: 12px;
-
-        border-radius: 10px;
+      #tmxe-v0493-file-label {
+        display:
+          inline-block;
 
         border:
           1px solid
           rgba(127,127,127,.45);
 
-        background:
-          rgba(127,127,127,.08);
+        border-radius:
+          9px;
 
-        color: inherit;
+        padding:
+          9px 13px;
+
+        cursor:
+          pointer;
+      }
+
+      #tmxe-v0493-sql {
+        width:
+          100%;
+
+        min-height:
+          150px;
+
+        resize:
+          vertical;
+
+        box-sizing:
+          border-box;
+
+        padding:
+          12px;
+
+        border-radius:
+          10px;
+
+        border:
+          1px solid
+          rgba(127,127,127,.4);
+
+        background:
+          rgba(127,127,127,.06);
+
+        color:
+          inherit;
 
         font:
           13px/1.5
@@ -441,49 +898,21 @@
           monospace;
       }
 
-      #tmxe-v0493-actions {
-        display: flex;
-
-        flex-wrap: wrap;
-
-        gap: 8px;
-
-        margin: 10px 0;
-      }
-
-      #tmxe-v0493-actions button {
-        border:
-          1px solid
-          rgba(127,127,127,.45);
-
-        border-radius: 9px;
-
-        padding: 9px 13px;
-
-        background: transparent;
-
-        color: inherit;
-
-        cursor: pointer;
-      }
-
-      #tmxe-v0493-actions
-      #tmxe-v0493-execute {
-        background: #7c3aed;
-        color: white;
-        border-color: #7c3aed;
-      }
-
       #tmxe-v0493-result {
-        white-space: pre-wrap;
+        white-space:
+          pre-wrap;
 
-        overflow: auto;
+        overflow:
+          auto;
 
-        max-height: 480px;
+        max-height:
+          500px;
 
-        padding: 12px;
+        padding:
+          12px;
 
-        border-radius: 10px;
+        border-radius:
+          10px;
 
         background:
           rgba(127,127,127,.10);
@@ -496,37 +925,40 @@
           monospace;
       }
 
-      #tmxe-v0493-info {
-        margin: 10px 0;
+      #tmxe-v0493-file-name {
+        margin:
+          8px 0;
 
-        padding: 10px;
-
-        border-radius: 9px;
-
-        background:
-          rgba(127,127,127,.08);
-
-        font-size: 13px;
+        opacity:
+          .75;
       }
 
-      .tmxe-v0493-label {
-        font-weight: 700;
-        margin-top: 15px;
-        margin-bottom: 6px;
+      .tmxe-v0493-section {
+        margin-top:
+          18px;
+      }
+
+      .tmxe-v0493-small {
+        opacity:
+          .65;
+
+        font-size:
+          12px;
       }
     `;
 
-    document.head.appendChild(style);
+    document.head.appendChild(
+      style
+    );
   }
 
   /*
-   * ============================================================
-   * BOTÓN
-   * ============================================================
+   * ------------------------------------------------------------
+   * INTERFAZ
+   * ------------------------------------------------------------
    */
 
   function createButton() {
-
     if (
       document.getElementById(
         "tmxe-v0493-button"
@@ -536,35 +968,33 @@
     }
 
     const button =
-      document.createElement("button");
+      document.createElement(
+        "button"
+      );
 
     button.id =
       "tmxe-v0493-button";
 
-    button.type = "button";
+    button.type =
+      "button";
 
     button.textContent =
       "📊 Excel v0.4.9.3";
 
     button.title =
-      "Excel Data Engine v0.4.9.3";
+      "TypingMind Excel Data Engine";
 
     button.addEventListener(
       "click",
       openPanel
     );
 
-    document.body.appendChild(button);
+    document.body.appendChild(
+      button
+    );
   }
 
-  /*
-   * ============================================================
-   * PANEL
-   * ============================================================
-   */
-
   function openPanel() {
-
     if (
       document.getElementById(
         "tmxe-v0493-overlay"
@@ -574,7 +1004,9 @@
     }
 
     const overlay =
-      document.createElement("div");
+      document.createElement(
+        "div"
+      );
 
     overlay.id =
       "tmxe-v0493-overlay";
@@ -594,48 +1026,37 @@
         ">
 
           <div>
-
             <h2>
-              📊 Excel Data Engine
-              ${VERSION}
+              📊 TypingMind Excel Data Engine
             </h2>
 
             <div id="tmxe-v0493-help">
-              Excel local + DuckDB-Wasm + SQL manual.
+              v0.4.9.3 TEST —
+              Excel local + DuckDB-Wasm + SQL
             </div>
-
           </div>
 
           <button
             id="tmxe-v0493-close"
             type="button"
-            style="
-              border:1px solid rgba(127,127,127,.45);
-              border-radius:9px;
-              padding:9px 13px;
-              background:transparent;
-              color:inherit;
-              cursor:pointer;
-            "
           >
             Cerrar
           </button>
 
         </div>
 
-        <div
-          id="tmxe-v0493-status"
-        >
+        <div id="tmxe-v0493-status">
           Motor listo.
-          Carga un archivo Excel para comenzar.
         </div>
 
-        <div style="
-          display:flex;
-          align-items:center;
-          gap:10px;
-          flex-wrap:wrap;
-        ">
+        <div id="tmxe-v0493-actions">
+
+          <label
+            id="tmxe-v0493-file-label"
+            for="tmxe-v0493-file"
+          >
+            📁 Seleccionar Excel
+          </label>
 
           <input
             id="tmxe-v0493-file"
@@ -647,100 +1068,124 @@
             id="tmxe-v0493-load"
             type="button"
           >
-            📁 Cargar Excel
+            🚀 Cargar y analizar
           </button>
-
-          <span
-            id="tmxe-v0493-filename"
-            style="opacity:.75"
-          >
-            Ningún archivo cargado.
-          </span>
 
         </div>
 
         <div
-          id="tmxe-v0493-info"
+          id="tmxe-v0493-file-name"
         >
-          Tabla DuckDB:
-          <code>excel_data</code>
+          Ningún archivo seleccionado.
         </div>
 
-        <div class="tmxe-v0493-label">
-          SQL
-        </div>
+        <div class="tmxe-v0493-section">
 
-        <textarea
-          id="tmxe-v0493-sql"
-          spellcheck="false"
-        >SELECT COUNT(*) AS registros
-FROM excel_data;</textarea>
+          <strong>
+            Pruebas rápidas
+          </strong>
 
-        <div id="tmxe-v0493-actions">
+          <div id="tmxe-v0493-actions">
 
-          <button
-            id="tmxe-v0493-count"
-            type="button"
-          >
-            COUNT
-          </button>
+            <button
+              id="tmxe-v0493-count"
+              type="button"
+            >
+              🔢 COUNT
+            </button>
 
-          <button
-            id="tmxe-v0493-preview"
-            type="button"
-          >
-            Vista previa
-          </button>
+            <button
+              id="tmxe-v0493-preview"
+              type="button"
+            >
+              👁 Vista previa
+            </button>
 
-          <button
-            id="tmxe-v0493-summary"
-            type="button"
-          >
-            Resumen
-          </button>
+            <button
+              id="tmxe-v0493-summary"
+              type="button"
+            >
+              📈 Resumen
+            </button>
 
-          <button
-            id="tmxe-v0493-year"
-            type="button"
-          >
-            Total por año
-          </button>
+            <button
+              id="tmxe-v0493-year"
+              type="button"
+            >
+              📅 Total por año
+            </button>
 
-          <button
-            id="tmxe-v0493-execute"
-            type="button"
-          >
-            ▶ Ejecutar SQL
-          </button>
+            <button
+              id="tmxe-v0493-version"
+              type="button"
+            >
+              ℹ️ Versión DuckDB
+            </button>
+
+          </div>
 
         </div>
 
-        <div class="tmxe-v0493-label">
-          Resultado
+        <div class="tmxe-v0493-section">
+
+          <strong>
+            SQL manual
+          </strong>
+
+          <textarea
+            id="tmxe-v0493-sql"
+            spellcheck="false"
+          >SELECT
+    "Año",
+    SUM("Total TEU's") AS total
+FROM excel_data
+GROUP BY "Año"
+ORDER BY "Año";</textarea>
+
+          <div id="tmxe-v0493-sql-actions">
+
+            <button
+              id="tmxe-v0493-run-sql"
+              type="button"
+            >
+              ▶ Ejecutar SQL
+            </button>
+
+            <button
+              id="tmxe-v0493-clear-sql"
+              type="button"
+            >
+              Limpiar
+            </button>
+
+          </div>
+
         </div>
 
-        <pre
-          id="tmxe-v0493-result"
-        >—</pre>
+        <div class="tmxe-v0493-section">
 
-        <div style="
-          margin-top:12px;
-          opacity:.6;
-          font-size:12px;
-        ">
-          ${VERSION} —
-          Todo el procesamiento se realiza localmente.
+          <strong>
+            Resultado
+          </strong>
+
+          <pre id="tmxe-v0493-result">—</pre>
+
+        </div>
+
+        <div class="tmxe-v0493-small">
+          v0.4.9.3 TEST —
+          El archivo y las consultas se procesan
+          localmente en el navegador.
         </div>
 
       </div>
     `;
 
-    document.body.appendChild(overlay);
+    document.body.appendChild(
+      overlay
+    );
 
-    document
-      .getElementById(
-        "tmxe-v0493-close"
-      )
+    $("tmxe-v0493-close")
       .addEventListener(
         "click",
         () => overlay.remove()
@@ -749,174 +1194,167 @@ FROM excel_data;</textarea>
     overlay.addEventListener(
       "click",
       event => {
-
         if (
           event.target === overlay
         ) {
           overlay.remove();
         }
-
       }
     );
 
-    const fileInput =
-      document.getElementById(
-        "tmxe-v0493-file"
+    $("tmxe-v0493-file")
+      .addEventListener(
+        "change",
+        handleFileSelection
       );
 
-    document
-      .getElementById(
-        "tmxe-v0493-load"
-      )
+    $("tmxe-v0493-load")
       .addEventListener(
         "click",
-        () => fileInput.click()
+        loadExcel
       );
 
-    fileInput.addEventListener(
-      "change",
-      loadExcel
-    );
-
-    document
-      .getElementById(
-        "tmxe-v0493-execute"
-      )
+    $("tmxe-v0493-count")
       .addEventListener(
         "click",
-        executeSQL
-      );
-
-    document
-      .getElementById(
-        "tmxe-v0493-count"
-      )
-      .addEventListener(
-        "click",
-        () => {
-
-          setSQL(`
+        () =>
+          runPresetSQL(
+            `
 SELECT COUNT(*) AS registros
 FROM excel_data;
-          `.trim());
-
-          executeSQL();
-        }
+            `
+          )
       );
 
-    document
-      .getElementById(
-        "tmxe-v0493-preview"
-      )
+    $("tmxe-v0493-preview")
       .addEventListener(
         "click",
-        () => {
-
-          setSQL(`
+        () =>
+          runPresetSQL(
+            `
 SELECT *
 FROM excel_data
 LIMIT 10;
-          `.trim());
+            `
+          )
+      );
 
-          executeSQL();
+    $("tmxe-v0493-summary")
+      .addEventListener(
+        "click",
+        runSummary
+      );
+
+    $("tmxe-v0493-year")
+      .addEventListener(
+        "click",
+        runYearSummary
+      );
+
+    $("tmxe-v0493-version")
+      .addEventListener(
+        "click",
+        runVersion
+      );
+
+    $("tmxe-v0493-run-sql")
+      .addEventListener(
+        "click",
+        runManualSQL
+      );
+
+    $("tmxe-v0493-clear-sql")
+      .addEventListener(
+        "click",
+        () => {
+          $("tmxe-v0493-sql").value =
+            "";
         }
       );
-
-    document
-      .getElementById(
-        "tmxe-v0493-summary"
-      )
-      .addEventListener(
-        "click",
-        summarySQL
-      );
-
-    document
-      .getElementById(
-        "tmxe-v0493-year"
-      )
-      .addEventListener(
-        "click",
-        totalPorAno
-      );
   }
-
-  /*
-   * ============================================================
-   * UI
-   * ============================================================
-   */
 
   function setStatus(
     text,
     kind = ""
   ) {
-
     const el =
-      document.getElementById(
-        "tmxe-v0493-status"
-      );
+      $("tmxe-v0493-status");
 
     if (!el) return;
 
-    el.textContent = text;
+    el.textContent =
+      text;
 
     if (kind) {
-      el.dataset.kind = kind;
+      el.dataset.kind =
+        kind;
     } else {
       delete el.dataset.kind;
     }
   }
 
   function setResult(value) {
-
     const el =
-      document.getElementById(
-        "tmxe-v0493-result"
-      );
+      $("tmxe-v0493-result");
 
     if (!el) return;
 
     if (
       typeof value === "string"
     ) {
-      el.textContent = value;
+      el.textContent =
+        value;
       return;
     }
 
     try {
-
       el.textContent =
-        safeJSONStringify(value);
-
+        stringifySafe(value);
     } catch (error) {
-
       el.textContent =
         String(value);
-
-    }
-  }
-
-  function setSQL(sql) {
-
-    const el =
-      document.getElementById(
-        "tmxe-v0493-sql"
-      );
-
-    if (el) {
-      el.value = sql;
     }
   }
 
   /*
-   * ============================================================
-   * CARGA DE LIBRERÍAS
-   * ============================================================
+   * ------------------------------------------------------------
+   * ARCHIVO
+   * ------------------------------------------------------------
    */
 
-  async function ensureDuckDB() {
+  function handleFileSelection(
+    event
+  ) {
+    const file =
+      event.target.files?.[0];
 
+    if (!file) {
+      currentFile =
+        null;
+
+      $("tmxe-v0493-file-name")
+        .textContent =
+          "Ningún archivo seleccionado.";
+
+      return;
+    }
+
+    currentFile =
+      file;
+
+    $("tmxe-v0493-file-name")
+      .textContent =
+        `Archivo seleccionado: ${file.name}
+Tamaño: ${file.size.toLocaleString()} bytes`;
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * DUCKDB
+   * ------------------------------------------------------------
+   */
+
+  async function initializeDuckDB() {
     if (
       duckdb &&
       db &&
@@ -926,7 +1364,7 @@ LIMIT 10;
     }
 
     setStatus(
-      "1/4 — Cargando DuckDB-Wasm..."
+      "1/5 — Cargando DuckDB-Wasm..."
     );
 
     duckdb =
@@ -935,7 +1373,7 @@ LIMIT 10;
       );
 
     setStatus(
-      "2/4 — Seleccionando bundle DuckDB..."
+      "2/5 — Seleccionando bundle DuckDB..."
     );
 
     const bundles =
@@ -945,6 +1383,10 @@ LIMIT 10;
       await duckdb.selectBundle(
         bundles
       );
+
+    setStatus(
+      "3/5 — Inicializando WebAssembly..."
+    );
 
     const workerURL =
       URL.createObjectURL(
@@ -960,7 +1402,9 @@ LIMIT 10;
       );
 
     const worker =
-      new Worker(workerURL);
+      new Worker(
+        workerURL
+      );
 
     const logger =
       new duckdb.ConsoleLogger();
@@ -983,787 +1427,461 @@ LIMIT 10;
     conn =
       await db.connect();
 
-    setStatus(
-      "3/4 — DuckDB conectado."
-    );
-  }
+    initialized =
+      true;
 
-  async function ensureXLSX() {
-
-    return await import(
-      XLSX_PACKAGE
-    );
+    return bundle;
   }
 
   /*
-   * ============================================================
-   * UTILIDADES EXCEL
-   * ============================================================
+   * ------------------------------------------------------------
+   * LEER EXCEL
+   * ------------------------------------------------------------
    */
 
-  function cleanHeader(
-    value,
-    index
+  async function readExcelFile(
+    file
   ) {
+    setStatus(
+      "4/5 — Leyendo archivo Excel localmente..."
+    );
 
-    let name =
-      value == null
-        ? ""
-        : String(value).trim();
+    const XLSX =
+      await import(
+        XLSX_PACKAGE
+      );
 
-    if (!name) {
-      name = `Columna_${index + 1}`;
-    }
+    const buffer =
+      await file.arrayBuffer();
 
-    return name;
-  }
-
-  function makeUniqueHeaders(
-    headers
-  ) {
-
-    const used =
-      new Map();
-
-    return headers.map(
-      (header, index) => {
-
-        let name =
-          cleanHeader(
-            header,
-            index
-          );
-
-        const count =
-          used.get(name) || 0;
-
-        if (count > 0) {
-          name =
-            `${name}_${count + 1}`;
+    workbook =
+      XLSX.read(
+        buffer,
+        {
+          type:
+            "array",
+          cellDates:
+            true,
+          cellNF:
+            false,
+          cellText:
+            false
         }
-
-        used.set(
-          cleanHeader(
-            header,
-            index
-          ),
-          count + 1
-        );
-
-        return name;
-      }
-    );
-  }
-
-  function isEmptyValue(value) {
-
-    return (
-      value === null ||
-      value === undefined ||
-      String(value).trim() === ""
-    );
-  }
-
-  function isEmptyRow(row) {
-
-    return row.every(
-      value =>
-        isEmptyValue(value)
-    );
-  }
-
-  function excelSerialToDate(
-    serial
-  ) {
-
-    if (
-      typeof serial !== "number" ||
-      !Number.isFinite(serial)
-    ) {
-      return null;
-    }
-
-    /*
-     * Excel epoch.
-     */
-    const epoch =
-      Date.UTC(
-        1899,
-        11,
-        30
       );
 
-    const ms =
-      epoch +
-      serial * 86400000;
-
-    const date =
-      new Date(ms);
+    const sheetNames =
+      workbook.SheetNames || [];
 
     if (
-      Number.isNaN(
-        date.getTime()
-      )
+      sheetNames.length === 0
     ) {
-      return null;
-    }
-
-    return date;
-  }
-
-  function formatDateForDuckDB(
-    value
-  ) {
-
-    if (
-      value instanceof Date
-    ) {
-      return value
-        .toISOString()
-        .slice(0, 10);
-    }
-
-    if (
-      typeof value === "number"
-    ) {
-
-      const date =
-        excelSerialToDate(
-          value
-        );
-
-      if (date) {
-        return date
-          .toISOString()
-          .slice(0, 10);
-      }
-    }
-
-    const text =
-      String(value)
-        .trim();
-
-    /*
-     * ISO
-     */
-    if (
-      /^\d{4}-\d{1,2}-\d{1,2}$/.test(
-        text
-      )
-    ) {
-
-      const parts =
-        text.split("-");
-
-      return (
-        `${parts[0]}-` +
-        `${parts[1].padStart(2, "0")}-` +
-        `${parts[2].padStart(2, "0")}`
+      throw new Error(
+        "El archivo no contiene hojas."
       );
     }
 
-    return null;
-  }
+    const sheetName =
+      sheetNames[0];
 
-  function looksLikeDateHeader(
-    header
-  ) {
+    const sheet =
+      workbook.Sheets[
+        sheetName
+      ];
 
-    const h =
-      String(header)
-        .toLowerCase();
-
-    return (
-      h.includes("fecha") ||
-      h.includes("date") ||
-      h.includes("día") ||
-      h.includes("dia")
-    );
-  }
-
-  function inferColumnType(
-    header,
-    values,
-    index
-  ) {
-
-    const nonEmpty =
-      values.filter(
-        v => !isEmptyValue(v)
+    const matrix =
+      XLSX.utils.sheet_to_json(
+        sheet,
+        {
+          header:
+            1,
+          defval:
+            null,
+          raw:
+            true,
+          blankrows:
+            true
+        }
       );
 
     if (
-      nonEmpty.length === 0
+      !matrix ||
+      matrix.length === 0
     ) {
-
-      return {
-        column_index: index,
-        column_name: header,
-        duckdb_type: "VARCHAR",
-        sqlType: "VARCHAR",
-        confidence: "low",
-        reason: "sin valores",
-        non_empty_values: 0
-      };
+      throw new Error(
+        "La hoja principal está vacía."
+      );
     }
 
     /*
-     * DATE
+     * Buscar primera fila con contenido.
      */
-    if (
-      looksLikeDateHeader(header)
-    ) {
 
-      const dates =
-        nonEmpty.filter(
+    let headerIndex =
+      -1;
+
+    for (
+      let i = 0;
+      i < matrix.length;
+      i++
+    ) {
+      const row =
+        matrix[i];
+
+      const hasContent =
+        Array.isArray(row) &&
+        row.some(
           value =>
-            formatDateForDuckDB(
-              value
-            ) !== null
+            value !== null &&
+            value !== undefined &&
+            String(value).trim() !== ""
         );
 
-      if (
-        dates.length ===
-        nonEmpty.length
-      ) {
+      if (hasContent) {
+        headerIndex =
+          i;
 
-        return {
-          column_index: index,
-          column_name: header,
-          duckdb_type: "DATE",
-          sqlType: "DATE",
-          confidence: "high",
-          reason:
-            "encabezado y valores compatibles con fecha",
-          non_empty_values:
-            nonEmpty.length
-        };
+        break;
       }
     }
 
-    /*
-     * INTEGER
-     */
-    const allIntegers =
-      nonEmpty.every(
-        value => {
-
-          if (
-            typeof value === "number"
-          ) {
-            return (
-              Number.isFinite(value) &&
-              Number.isInteger(value)
-            );
-          }
-
-          const text =
-            String(value)
-              .trim();
-
-          return (
-            /^[-+]?\d+$/.test(text)
-          );
-        }
+    if (
+      headerIndex === -1
+    ) {
+      throw new Error(
+        "No se encontró una fila de encabezados."
       );
-
-    if (allIntegers) {
-
-      return {
-        column_index: index,
-        column_name: header,
-        duckdb_type: "BIGINT",
-        sqlType: "BIGINT",
-        confidence: "high",
-        reason:
-          "todos los valores son enteros",
-        non_empty_values:
-          nonEmpty.length
-      };
     }
 
-    /*
-     * DOUBLE
-     */
-    const allNumbers =
-      nonEmpty.every(
-        value => {
-
-          if (
-            typeof value === "number"
-          ) {
-            return Number.isFinite(value);
-          }
-
-          const normalized =
-            String(value)
-              .trim()
-              .replace(/,/g, "");
-
-          return (
-            normalized !== "" &&
-            Number.isFinite(
-              Number(normalized)
-            )
-          );
-        }
+    headers =
+      normalizeHeaders(
+        matrix[headerIndex]
       );
 
-    if (allNumbers) {
+    const columnCount =
+      headers.length;
 
-      return {
-        column_index: index,
-        column_name: header,
-        duckdb_type: "DOUBLE",
-        sqlType: "DOUBLE",
-        confidence: "high",
-        reason:
-          "todos los valores son numéricos",
-        non_empty_values:
-          nonEmpty.length
-      };
+    const physicalRows =
+      matrix.length -
+      headerIndex -
+      1;
+
+    const dataRows =
+      [];
+
+    let emptyRows =
+      0;
+
+    for (
+      let i =
+        headerIndex + 1;
+      i < matrix.length;
+      i++
+    ) {
+      const original =
+        matrix[i] || [];
+
+      const row =
+        [];
+
+      for (
+        let c = 0;
+        c < columnCount;
+        c++
+      ) {
+        row.push(
+          original[c] ??
+          null
+        );
+      }
+
+      const hasContent =
+        row.some(
+          value =>
+            value !== null &&
+            value !== undefined &&
+            String(value).trim() !== ""
+        );
+
+      if (!hasContent) {
+        emptyRows++;
+        continue;
+      }
+
+      dataRows.push(
+        row
+      );
     }
+
+    rows =
+      dataRows;
+
+    inferTypes();
 
     return {
-      column_index: index,
-      column_name: header,
-      duckdb_type: "VARCHAR",
-      sqlType: "VARCHAR",
-      confidence: "medium",
-      reason:
-        "valores tratados como texto",
-      non_empty_values:
-        nonEmpty.length
+      sheetNames,
+      sheetName,
+      physicalRows,
+      realRows:
+        rows.length,
+      emptyRows,
+      columnCount
     };
   }
 
   /*
-   * ============================================================
-   * SQL HELPERS
-   * ============================================================
+   * ------------------------------------------------------------
+   * CREAR TABLA DUCKDB
+   * ------------------------------------------------------------
    */
 
-  function quoteIdentifier(
-    name
-  ) {
+  async function createDuckDBTable() {
+    if (!conn) {
+      throw new Error(
+        "DuckDB no está conectado."
+      );
+    }
 
-    return (
-      '"' +
-      String(name)
-        .replace(/"/g, '""') +
-      '"'
+    /*
+     * Eliminar tabla anterior.
+     */
+
+    await conn.query(
+      `DROP TABLE IF EXISTS ${quoteIdentifier(tableName)};`
     );
-  }
 
-  function escapeSQLString(
-    value
-  ) {
+    const definitions =
+      inferredTypes.map(
+        type =>
+          `${quoteIdentifier(type.column_name)} ${type.sqlType}`
+      );
 
-    return String(value)
-      .replace(/'/g, "''");
-  }
+    const createSQL =
+      `
+CREATE TABLE ${quoteIdentifier(tableName)} (
+  ${definitions.join(",\n  ")}
+);
+      `;
 
-  function valueForSQL(
-    value,
-    type
-  ) {
-
-    if (
-      value === null ||
-      value === undefined ||
-      String(value).trim() === ""
-    ) {
-      return "NULL";
-    }
-
-    if (
-      type === "DATE"
-    ) {
-
-      const date =
-        formatDateForDuckDB(
-          value
-        );
-
-      if (date) {
-        return `DATE '${date}'`;
-      }
-
-      return "NULL";
-    }
-
-    if (
-      type === "BIGINT"
-    ) {
-
-      const text =
-        String(value)
-          .trim()
-          .replace(/,/g, "");
-
-      if (
-        /^[-+]?\d+$/.test(text)
-      ) {
-        return text;
-      }
-
-      return "NULL";
-    }
-
-    if (
-      type === "DOUBLE"
-    ) {
-
-      const text =
-        String(value)
-          .trim()
-          .replace(/,/g, "");
-
-      if (
-        Number.isFinite(
-          Number(text)
-        )
-      ) {
-        return text;
-      }
-
-      return "NULL";
-    }
-
-    return `'${escapeSQLString(
-      value
-    )}'`;
+    await conn.query(
+      createSQL
+    );
   }
 
   /*
-   * ============================================================
-   * CREAR TABLA
-   * ============================================================
+   * ------------------------------------------------------------
+   * INSERTAR DATOS POR LOTES
+   * ------------------------------------------------------------
    */
 
-  async function createDuckDBTable(
-    rows,
-    headers,
-    typeInfo
-  ) {
+  async function insertRows() {
+    const batchSize =
+      1000;
 
-    await conn.query(
-      `DROP TABLE IF EXISTS excel_data;`
-    );
-
-    const columnsSQL =
-      headers.map(
-        (header, index) =>
-          `${quoteIdentifier(header)} ${
-            typeInfo[index].sqlType
-          }`
-      ).join(",\n");
-
-    await conn.query(
-      `
-      CREATE TABLE excel_data (
-        ${columnsSQL}
-      );
-      `
-    );
-
-    /*
-     * Insertar por lotes para no construir
-     * una consulta gigantesca.
-     */
-    const BATCH_SIZE = 500;
+    const total =
+      rows.length;
 
     for (
       let start = 0;
-      start < rows.length;
-      start += BATCH_SIZE
+      start < total;
+      start += batchSize
     ) {
+      const end =
+        Math.min(
+          start + batchSize,
+          total
+        );
 
       const batch =
         rows.slice(
           start,
-          start + BATCH_SIZE
+          end
         );
 
-      const valuesSQL =
+      const values =
         batch.map(
           row => {
-
-            const values =
-              headers.map(
-                (_, index) =>
-                  valueForSQL(
-                    row[index],
-                    typeInfo[index].sqlType
+            const prepared =
+              row.map(
+                (value, index) =>
+                  prepareValue(
+                    value,
+                    inferredTypes[index]
+                      .sqlType
                   )
               );
 
-            return `(${values.join(",")})`;
+            return (
+              "(" +
+              prepared
+                .map(sqlLiteral)
+                .join(", ") +
+              ")"
+            );
           }
-        ).join(",\n");
-
-      if (valuesSQL) {
-
-        await conn.query(
-          `
-          INSERT INTO excel_data
-          VALUES
-          ${valuesSQL};
-          `
         );
-      }
+
+      const sql =
+        `
+INSERT INTO ${quoteIdentifier(tableName)}
+VALUES
+${values.join(",\n")};
+        `;
+
+      await conn.query(
+        sql
+      );
+
+      setStatus(
+        `5/5 — Insertando datos localmente...\n` +
+        `${end.toLocaleString()} / ${total.toLocaleString()} registros`
+      );
+
+      /*
+       * Permitir que el navegador
+       * respire entre lotes.
+       */
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            0
+          )
+      );
     }
   }
 
   /*
-   * ============================================================
+   * ------------------------------------------------------------
    * CARGAR EXCEL
-   * ============================================================
+   * ------------------------------------------------------------
    */
 
-  async function loadExcel(
-    event
-  ) {
-
-    const file =
-      event.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
+  async function loadExcel() {
     try {
-
-      currentFile = file;
-
-      setStatus(
-        "Preparando carga local..."
-      );
-
       setResult("");
 
-      /*
-       * DuckDB
-       */
-      await ensureDuckDB();
-
-      /*
-       * SheetJS
-       */
-      setStatus(
-        "4/6 — Leyendo Excel localmente..."
-      );
-
-      const XLSX =
-        await ensureXLSX();
-
-      const arrayBuffer =
-        await file.arrayBuffer();
-
-      const workbook =
-        XLSX.read(
-          arrayBuffer,
-          {
-            type: "array",
-            cellDates: false
-          }
-        );
-
-      const sheets =
-        workbook.SheetNames;
-
-      if (
-        !sheets.length
-      ) {
+      if (!currentFile) {
         throw new Error(
-          "El archivo no contiene hojas."
+          "Primero selecciona un archivo Excel."
         );
-      }
-
-      currentSheetName =
-        sheets[0];
-
-      const worksheet =
-        workbook.Sheets[
-          currentSheetName
-        ];
-
-      /*
-       * Matriz completa.
-       */
-      const matrix =
-        XLSX.utils.sheet_to_json(
-          worksheet,
-          {
-            header: 1,
-            defval: null,
-            raw: true,
-            blankrows: true
-          }
-        );
-
-      const physicalRows =
-        matrix.length;
-
-      /*
-       * Encontrar primera fila no vacía.
-       */
-      let headerIndex = -1;
-
-      for (
-        let i = 0;
-        i < matrix.length;
-        i++
-      ) {
-
-        if (
-          !isEmptyRow(matrix[i])
-        ) {
-          headerIndex = i;
-          break;
-        }
       }
 
       if (
-        headerIndex === -1
+        !/\.(xlsx|xls|xlsm)$/i.test(
+          currentFile.name
+        )
       ) {
         throw new Error(
-          "No se encontró una fila de encabezados."
+          "El archivo debe ser XLSX, XLS o XLSM."
         );
       }
 
-      currentHeaders =
-        makeUniqueHeaders(
-          matrix[headerIndex]
+      const bundle =
+        await initializeDuckDB();
+
+      const excelInfo =
+        await readExcelFile(
+          currentFile
         );
 
-      const dataMatrix =
-        matrix.slice(
-          headerIndex + 1
-        );
+      await createDuckDBTable();
+
+      await insertRows();
 
       /*
-       * Filas reales.
+       * COUNT REAL
        */
-      currentRows =
-        dataMatrix.filter(
-          row =>
-            !isEmptyRow(row)
-        );
 
-      /*
-       * Asegurar cantidad de columnas.
-       */
-      currentRows =
-        currentRows.map(
-          row => {
-
-            const normalized =
-              new Array(
-                currentHeaders.length
-              ).fill(null);
-
-            for (
-              let i = 0;
-              i <
-              currentHeaders.length;
-              i++
-            ) {
-              normalized[i] =
-                row[i] ?? null;
-            }
-
-            return normalized;
-          }
-        );
-
-      /*
-       * Inferencia.
-       */
-      currentTypeInfo =
-        currentHeaders.map(
-          (header, index) =>
-            inferColumnType(
-              header,
-              currentRows.map(
-                row => row[index]
-              ),
-              index
-            )
-        );
-
-      setStatus(
-        "5/6 — Creando tabla DuckDB local..."
-      );
-
-      await createDuckDBTable(
-        currentRows,
-        currentHeaders,
-        currentTypeInfo
-      );
-
-      /*
-       * Verificación.
-       */
       const countResult =
         await conn.query(
           `
-          SELECT COUNT(*) AS registros
-          FROM excel_data;
+SELECT COUNT(*) AS registros
+FROM ${quoteIdentifier(tableName)};
           `
         );
 
       const countRows =
-        normalizeRows(
-          countResult.toArray()
+        rowsToObjects(
+          countResult
         );
+
+      /*
+       * SCHEMA
+       */
 
       const schemaResult =
         await conn.query(
           `
-          DESCRIBE excel_data;
+DESCRIBE ${quoteIdentifier(tableName)};
           `
         );
 
-      currentSchema =
-        normalizeRows(
-          schemaResult.toArray()
+      const schema =
+        rowsToObjects(
+          schemaResult
         );
 
-      const count =
-        countRows[0]?.registros ?? 0;
+      /*
+       * PREVIEW
+       */
 
       const previewResult =
         await conn.query(
           `
-          SELECT *
-          FROM excel_data
-          LIMIT 10;
+SELECT *
+FROM ${quoteIdentifier(tableName)}
+LIMIT 10;
           `
         );
 
       const preview =
-        normalizeRows(
-          previewResult.toArray()
+        rowsToObjects(
+          previewResult
         );
 
+      /*
+       * VERSIÓN CORRECTA
+       *
+       * IMPORTANTE:
+       *
+       * pragma_version() NO tiene una columna
+       * llamada "version".
+       *
+       * Utilizamos library_version.
+       */
+
+      let duckdbVersion =
+        null;
+
+      try {
+        const versionResult =
+          await conn.query(
+            `
+SELECT
+  library_version AS duckdb_version
+FROM pragma_version();
+            `
+          );
+
+        duckdbVersion =
+          rowsToObjects(
+            versionResult
+          );
+      } catch (error) {
+        duckdbVersion = {
+          error:
+            error?.message ||
+            String(error)
+        };
+      }
+
       setStatus(
-        "6/6 — Excel cargado y consultado localmente.",
+        "✅ Excel cargado y procesado localmente.",
         "ok"
       );
 
-      const filenameEl =
-        document.getElementById(
-          "tmxe-v0493-filename"
-        );
-
-      if (filenameEl) {
-        filenameEl.textContent =
-          file.name;
-      }
-
       setResult({
-
         engine:
           APP_ID,
 
@@ -1771,75 +1889,77 @@ LIMIT 10;
           "LOCAL",
 
         archivo:
-          file.name,
+          currentFile.name,
 
         tamano_bytes:
-          file.size,
+          currentFile.size,
 
         hojas:
-          sheets,
+          excelInfo.sheetNames,
 
         hoja_principal:
-          currentSheetName,
+          excelInfo.sheetName,
 
         filas_fisicas_detectadas:
-          physicalRows,
+          excelInfo.physicalRows,
 
         filas_reales:
-          currentRows.length,
+          excelInfo.realRows,
 
         filas_vacias_ignoradas:
-          physicalRows -
-          headerIndex -
-          1 -
-          currentRows.length,
+          excelInfo.emptyRows,
 
         filas_insertadas:
-          Number(count),
+          rows.length,
 
         columnas_detectadas:
-          currentHeaders.length,
+          excelInfo.columnCount,
 
         encabezados:
-          currentHeaders,
+          headers,
 
         tipos_inferidos:
-          currentTypeInfo,
+          inferredTypes,
 
         duckdb_table:
-          "excel_data",
+          tableName,
 
         duckdb_version:
-          normalizeRows(
-            (
-              await conn.query(
-                "SELECT version AS duckdb_version FROM pragma_version();"
-              )
-            ).toArray()
-          ),
+          duckdbVersion,
+
+        count:
+          countRows,
 
         schema:
-          currentSchema,
+          schema,
 
         preview:
-          preview
+          preview,
 
+        bundle: {
+          mainModule:
+            bundle.mainModule,
+
+          mainWorker:
+            bundle.mainWorker,
+
+          pthreadWorker:
+            bundle.pthreadWorker
+        }
       });
 
     } catch (error) {
-
       console.error(
         `[${APP_ID}]`,
         error
       );
 
       setStatus(
-        "❌ ERROR AL CARGAR EL EXCEL",
+        "❌ ERROR AL CARGAR EL ARCHIVO",
         "error"
       );
 
       setResult({
-
         mensaje:
           error?.message ||
           String(error),
@@ -1847,101 +1967,95 @@ LIMIT 10;
         stack:
           error?.stack ||
           null
-
       });
     }
   }
 
   /*
-   * ============================================================
-   * EJECUTAR SQL
-   * ============================================================
+   * ------------------------------------------------------------
+   * SQL
+   * ------------------------------------------------------------
    */
 
-  async function executeSQL() {
-
+  async function executeSQL(
+    sql
+  ) {
     if (!conn) {
-
-      setStatus(
-        "Primero carga un archivo Excel.",
-        "error"
+      throw new Error(
+        "Primero debes cargar un archivo Excel."
       );
-
-      return;
     }
 
-    const sqlEl =
-      document.getElementById(
-        "tmxe-v0493-sql"
+    const cleanSQL =
+      String(sql || "")
+        .trim();
+
+    if (!cleanSQL) {
+      throw new Error(
+        "La consulta SQL está vacía."
       );
-
-    const sql =
-      sqlEl?.value?.trim();
-
-    if (!sql) {
-
-      setStatus(
-        "Escribe una consulta SQL.",
-        "error"
-      );
-
-      return;
     }
 
+    const start =
+      performance.now();
+
+    const result =
+      await conn.query(
+        cleanSQL
+      );
+
+    const elapsed =
+      performance.now() -
+      start;
+
+    const data =
+      rowsToObjects(
+        result
+      );
+
+    return {
+      procesamiento:
+        "LOCAL",
+
+      sql:
+        cleanSQL,
+
+      filas_resultado:
+        data.length,
+
+      tiempo_ms:
+        Number(
+          elapsed.toFixed(1)
+        ),
+
+      resultado:
+        data
+    };
+  }
+
+  async function runPresetSQL(
+    sql
+  ) {
     try {
-
       setStatus(
-        "Ejecutando SQL localmente..."
+        "⏳ Ejecutando SQL localmente..."
       );
-
-      const start =
-        performance.now();
 
       const result =
-        await conn.query(
+        await executeSQL(
           sql
         );
 
-      const end =
-        performance.now();
-
-      const rawRows =
-        result.toArray();
-
-      const rows =
-        normalizeRows(
-          rawRows
-        );
-
       setStatus(
-        "Consulta SQL ejecutada correctamente.",
+        "✅ Consulta ejecutada localmente.",
         "ok"
       );
 
-      setResult({
-
-        procesamiento:
-          "LOCAL",
-
-        sql:
-          sql,
-
-        filas_resultado:
-          rows.length,
-
-        tiempo_ms:
-          Number(
-            (end - start)
-              .toFixed(1)
-          ),
-
-        resultado:
-          rows
-
-      });
+      setResult(
+        result
+      );
 
     } catch (error) {
-
       console.error(
         `[${APP_ID}] SQL`,
         error
@@ -1953,13 +2067,6 @@ LIMIT 10;
       );
 
       setResult({
-
-        procesamiento:
-          "LOCAL",
-
-        sql:
-          sql,
-
         mensaje:
           error?.message ||
           String(error),
@@ -1967,205 +2074,336 @@ LIMIT 10;
         stack:
           error?.stack ||
           null
+      });
+    }
+  }
 
+  async function runManualSQL() {
+    const sql =
+      $("tmxe-v0493-sql")
+        ?.value || "";
+
+    await runPresetSQL(
+      sql
+    );
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * COUNT
+   * ------------------------------------------------------------
+   */
+
+  /*
+   * ------------------------------------------------------------
+   * RESUMEN
+   * ------------------------------------------------------------
+   */
+
+  async function runSummary() {
+    try {
+      if (!conn) {
+        throw new Error(
+          "Primero debes cargar un Excel."
+        );
+      }
+
+      setStatus(
+        "⏳ Generando resumen estadístico local..."
+      );
+
+      const numericColumns =
+        inferredTypes.filter(
+          item =>
+            item.sqlType ===
+              "BIGINT" ||
+            item.sqlType ===
+              "DOUBLE"
+        );
+
+      if (
+        numericColumns.length === 0
+      ) {
+        throw new Error(
+          "No se detectaron columnas numéricas."
+        );
+      }
+
+      const expressions =
+        [];
+
+      for (
+        const column of numericColumns
+      ) {
+        const q =
+          quoteIdentifier(
+            column.column_name
+          );
+
+        expressions.push(
+          `COUNT(${q}) AS ${quoteIdentifier(
+            column.column_name +
+              "__count"
+          )}`
+        );
+
+        expressions.push(
+          `SUM(${q}) AS ${quoteIdentifier(
+            column.column_name +
+              "__sum"
+          )}`
+        );
+
+        expressions.push(
+          `AVG(${q}) AS ${quoteIdentifier(
+            column.column_name +
+              "__avg"
+          )}`
+        );
+
+        expressions.push(
+          `MIN(${q}) AS ${quoteIdentifier(
+            column.column_name +
+              "__min"
+          )}`
+        );
+
+        expressions.push(
+          `MAX(${q}) AS ${quoteIdentifier(
+            column.column_name +
+              "__max"
+          )}`
+        );
+      }
+
+      const sql =
+        `
+SELECT
+  ${expressions.join(",\n  ")}
+FROM ${quoteIdentifier(tableName)};
+        `;
+
+      const result =
+        await executeSQL(
+          sql
+        );
+
+      setStatus(
+        "✅ Resumen generado localmente.",
+        "ok"
+      );
+
+      setResult(
+        result
+      );
+
+    } catch (error) {
+      setStatus(
+        "❌ ERROR EN EL RESUMEN",
+        "error"
+      );
+
+      setResult({
+        mensaje:
+          error?.message ||
+          String(error),
+
+        stack:
+          error?.stack ||
+          null
       });
     }
   }
 
   /*
-   * ============================================================
-   * RESUMEN
-   * ============================================================
-   */
-
-  async function summarySQL() {
-
-    if (!currentHeaders.length) {
-
-      setStatus(
-        "Primero carga un Excel.",
-        "error"
-      );
-
-      return;
-    }
-
-    const numericColumns =
-      currentTypeInfo.filter(
-        item =>
-          item.sqlType === "BIGINT" ||
-          item.sqlType === "DOUBLE"
-      );
-
-    if (
-      numericColumns.length === 0
-    ) {
-
-      setStatus(
-        "No se detectaron columnas numéricas.",
-        "error"
-      );
-
-      return;
-    }
-
-    const expressions =
-      numericColumns.map(
-        item => {
-
-          const c =
-            quoteIdentifier(
-              item.column_name
-            );
-
-          return `
-SUM(${c}) AS ${quoteIdentifier(
-            item.column_name +
-            "__sum"
-          )},
-AVG(${c}) AS ${quoteIdentifier(
-            item.column_name +
-            "__avg"
-          )},
-MIN(${c}) AS ${quoteIdentifier(
-            item.column_name +
-            "__min"
-          )},
-MAX(${c}) AS ${quoteIdentifier(
-            item.column_name +
-            "__max"
-          )}
-          `.trim();
-
-        }
-      ).join(",\n");
-
-    const sql = `
-SELECT
-    ${expressions}
-FROM excel_data;
-    `.trim();
-
-    setSQL(sql);
-
-    await executeSQL();
-  }
-
-  /*
-   * ============================================================
+   * ------------------------------------------------------------
    * TOTAL POR AÑO
-   * ============================================================
+   * ------------------------------------------------------------
    */
 
-  async function totalPorAno() {
+  async function runYearSummary() {
+    try {
+      if (!conn) {
+        throw new Error(
+          "Primero debes cargar un Excel."
+        );
+      }
 
-    if (!currentHeaders.length) {
-
-      setStatus(
-        "Primero carga un Excel.",
-        "error"
-      );
-
-      return;
-    }
-
-    const yearColumn =
-      currentHeaders.find(
-        h =>
-          String(h)
-            .trim()
-            .toLowerCase() ===
-          "año"
-      );
-
-    const dateColumn =
-      currentHeaders.find(
-        h =>
-          String(h)
-            .trim()
-            .toLowerCase() ===
-          "fecha"
-      );
-
-    const totalColumn =
-      currentHeaders.find(
-        h =>
-          String(h)
-            .trim()
-            .toLowerCase() ===
-          "total teu's"
-      );
-
-    if (
-      !totalColumn
-    ) {
-
-      setStatus(
-        'No se encontró la columna "Total TEU\'s".',
-        "error"
-      );
-
-      return;
-    }
-
-    let yearExpression;
-
-    /*
-     * Si existe Año y es numérico,
-     * usamos esa columna directamente.
-     */
-    if (
-      yearColumn
-    ) {
-
-      yearExpression =
-        quoteIdentifier(
-          yearColumn
+      const yearColumn =
+        inferredTypes.find(
+          item =>
+            String(
+              item.column_name
+            )
+              .trim()
+              .toLowerCase() ===
+            "año"
         );
 
-    } else if (
-      dateColumn
-    ) {
+      const dateColumn =
+        inferredTypes.find(
+          item =>
+            item.sqlType ===
+            "DATE"
+        );
 
-      yearExpression =
-        `EXTRACT(YEAR FROM ${quoteIdentifier(
-          dateColumn
-        )})`;
+      const totalColumn =
+        inferredTypes.find(
+          item =>
+            String(
+              item.column_name
+            )
+              .toLowerCase()
+              .includes("total")
+        );
 
-    } else {
+      /*
+       * Preferimos una columna "Año"
+       * si existe.
+       */
+
+      let yearExpression;
+
+      if (yearColumn) {
+        yearExpression =
+          quoteIdentifier(
+            yearColumn.column_name
+          );
+      } else if (dateColumn) {
+        yearExpression =
+          `EXTRACT(YEAR FROM ${quoteIdentifier(
+            dateColumn.column_name
+          )})`;
+      } else {
+        throw new Error(
+          "No se encontró una columna Año ni una columna Fecha."
+        );
+      }
+
+      if (!totalColumn) {
+        throw new Error(
+          "No se encontró una columna cuyo nombre contenga 'Total'."
+        );
+      }
+
+      const total =
+        quoteIdentifier(
+          totalColumn.column_name
+        );
+
+      const sql =
+        `
+SELECT
+  ${yearExpression} AS año,
+  SUM(${total}) AS total
+FROM ${quoteIdentifier(tableName)}
+GROUP BY ${yearExpression}
+ORDER BY ${yearExpression};
+        `;
 
       setStatus(
-        "No se encontró una columna de año o fecha.",
+        "⏳ Calculando total por año localmente..."
+      );
+
+      const result =
+        await executeSQL(
+          sql
+        );
+
+      setStatus(
+        "✅ Total por año calculado localmente.",
+        "ok"
+      );
+
+      setResult(
+        result
+      );
+
+    } catch (error) {
+      setStatus(
+        "❌ ERROR EN TOTAL POR AÑO",
         "error"
       );
 
-      return;
+      setResult({
+        mensaje:
+          error?.message ||
+          String(error),
+
+        stack:
+          error?.stack ||
+          null
+      });
     }
-
-    const sql = `
-SELECT
-    ${yearExpression} AS "Año",
-    SUM(${quoteIdentifier(
-      totalColumn
-    )}) AS total
-FROM excel_data
-GROUP BY ${yearExpression}
-ORDER BY ${yearExpression};
-    `.trim();
-
-    setSQL(sql);
-
-    await executeSQL();
   }
 
   /*
-   * ============================================================
-   * INICIO
-   * ============================================================
+   * ------------------------------------------------------------
+   * VERSIÓN DUCKDB
+   * ------------------------------------------------------------
+   */
+
+  async function runVersion() {
+    try {
+      if (!conn) {
+        throw new Error(
+          "DuckDB todavía no está conectado."
+        );
+      }
+
+      /*
+       * CORRECTO PARA DUCKDB 1.1.1:
+       *
+       * SELECT library_version
+       * FROM pragma_version();
+       */
+
+      const sql =
+        `
+SELECT
+  library_version AS duckdb_version
+FROM pragma_version();
+        `;
+
+      const result =
+        await executeSQL(
+          sql
+        );
+
+      setStatus(
+        "✅ Versión DuckDB consultada.",
+        "ok"
+      );
+
+      setResult(
+        result
+      );
+
+    } catch (error) {
+      setStatus(
+        "❌ ERROR CONSULTANDO VERSIÓN",
+        "error"
+      );
+
+      setResult({
+        mensaje:
+          error?.message ||
+          String(error),
+
+        stack:
+          error?.stack ||
+          null
+      });
+    }
+  }
+
+  /*
+   * ------------------------------------------------------------
+   * INIT
+   * ------------------------------------------------------------
    */
 
   function init() {
-
     addStyles();
 
     createButton();
@@ -2179,17 +2417,15 @@ ORDER BY ${yearExpression};
     document.readyState ===
     "loading"
   ) {
-
     document.addEventListener(
       "DOMContentLoaded",
       init,
-      { once: true }
+      {
+        once: true
+      }
     );
-
   } else {
-
     init();
-
   }
 
 })();
