@@ -3,18 +3,19 @@
  * Extension v0.4.14 TEST
  *
  * CAMBIOS v0.4.14
- * - Corrige detección incorrecta de números como fechas.
- * - Valores como 31391, 49818, 79397 ya NO se interpretan como DATE.
- * - "Fecha" se mantiene como DATE.
- * - "Año", "Local", "Transshipment" y "Total TEUs" se detectan
- *   correctamente como BIGINT cuando contienen enteros.
- * - Detecta "Total TEUs" y variantes como "Total TEU's".
- * - El botón "Total por año" usa los nombres REALES de las columnas.
+ * - Compatible con DuckDB-Wasm 1.29.0 / DuckDB 1.1.1.
+ * - Corrige information_schema.columns:
+ *   usa DATA_TYPE en lugar de COLUMN_TYPE.
+ * - Corrige inferencia de fechas.
+ * - Los números como 87840, 31391, 119231, etc.
+ *   NO se interpretan como fechas salvo que la columna
+ *   tenga encabezado de fecha.
+ * - Detecta "Total TEUs", "Total TEU's" y variantes.
+ * - Total por año usa los encabezados reales.
+ * - Total por mes usa los encabezados reales.
+ * - Total por Local usa los encabezados reales.
  * - Normaliza resultados Arrow/DuckDB-Wasm.
- * - Corrige agregados representados como [valor,0,0,0].
  * - Mantiene procesamiento 100% LOCAL.
- * - DuckDB-Wasm 1.29.0
- * - SheetJS 0.18.5
  */
 
 (() => {
@@ -40,14 +41,9 @@
   let currentFile = null;
   let currentWorkbook = null;
   let currentSheetName = null;
-
   let currentHeaders = [];
   let currentRows = [];
-  let currentInferredTypes = [];
-
-  /* =========================================================
-   * UTILIDADES
-   * ========================================================= */
+  let currentTypes = [];
 
   function safeString(value) {
     return value === null || value === undefined
@@ -65,16 +61,8 @@
   }
 
   /*
-   * Normaliza nombres únicamente para comparaciones.
-   * NO modifica el nombre real de la columna.
-   *
-   * Ejemplos:
-   * Total TEUs
-   * Total TEU's
-   * TOTAL TEUS
-   * Total TEU´s
-   *
-   * -> totalteus
+   * Normaliza encabezados únicamente para comparar.
+   * No modifica el nombre real.
    */
   function normalizeHeaderName(value) {
     return safeString(value)
@@ -86,18 +74,33 @@
       .trim();
   }
 
+  function escapeSqlIdentifier(name) {
+    return (
+      '"' +
+      safeString(name).replace(/"/g, '""') +
+      '"'
+    );
+  }
+
+  function escapeSqlString(value) {
+    return safeString(value).replace(/'/g, "''");
+  }
+
+  /*
+   * Convierte valores especiales de DuckDB-Wasm.
+   */
   function normalizeNumericArray(value) {
-    if (!Array.isArray(value) || value.length !== 4) {
+    if (!Array.isArray(value)) {
+      return null;
+    }
+
+    if (value.length !== 4) {
       return null;
     }
 
     const nums = value.map(v => {
       if (typeof v === "bigint") {
         return Number(v);
-      }
-
-      if (typeof v === "number") {
-        return v;
       }
 
       return Number(v);
@@ -107,10 +110,6 @@
       return null;
     }
 
-    /*
-     * DuckDB-Wasm / Arrow puede representar algunos valores
-     * numéricos como [valor,0,0,0].
-     */
     if (
       nums[1] === 0 &&
       nums[2] === 0 &&
@@ -123,7 +122,10 @@
   }
 
   function normalizeValue(value, key = "") {
-    if (value === null || value === undefined) {
+    if (
+      value === null ||
+      value === undefined
+    ) {
       return null;
     }
 
@@ -142,17 +144,21 @@
     }
 
     if (value instanceof ArrayBuffer) {
-      return Array.from(new Uint8Array(value));
+      return Array.from(
+        new Uint8Array(value)
+      );
     }
 
     if (ArrayBuffer.isView(value)) {
       const arr = Array.from(value);
-
-      const scalar = normalizeNumericArray(arr);
+      const scalar =
+        normalizeNumericArray(arr);
 
       if (
         scalar !== null &&
-        /sum|avg|min|max|count|total|registros/i.test(key)
+        /sum|avg|min|max|count|total|registros/i.test(
+          key
+        )
       ) {
         return scalar;
       }
@@ -163,11 +169,14 @@
     }
 
     if (Array.isArray(value)) {
-      const scalar = normalizeNumericArray(value);
+      const scalar =
+        normalizeNumericArray(value);
 
       if (
         scalar !== null &&
-        /sum|avg|min|max|count|total|registros/i.test(key)
+        /sum|avg|min|max|count|total|registros/i.test(
+          key
+        )
       ) {
         return scalar;
       }
@@ -217,10 +226,6 @@
   }
 
   function setResult(value) {
-    const safe = jsonSafe(
-      normalizeValue(value)
-    );
-
     const output =
       document.getElementById(
         "tm-excel-result"
@@ -232,46 +237,25 @@
 
     output.textContent =
       JSON.stringify(
-        safe,
+        jsonSafe(
+          normalizeValue(value)
+        ),
         null,
         2
       );
   }
 
   function showError(error) {
-    const message =
-      error && error.message
-        ? error.message
-        : String(error);
-
-    const stack =
-      error && error.stack
-        ? error.stack
-        : "";
-
     setResult({
-      mensaje: message,
-      stack
+      mensaje:
+        error?.message ||
+        String(error),
+
+      stack:
+        error?.stack ||
+        ""
     });
   }
-
-  function escapeSqlIdentifier(name) {
-    return `"${safeString(name).replace(
-      /"/g,
-      '""'
-    )}"`;
-  }
-
-  function escapeSqlString(value) {
-    return safeString(value).replace(
-      /'/g,
-      "''"
-    );
-  }
-
-  /* =========================================================
-   * ENCABEZADOS
-   * ========================================================= */
 
   function makeUniqueHeaders(headers) {
     const result = [];
@@ -282,25 +266,23 @@
         safeString(header).trim();
 
       if (!name) {
-        name = `Columna_${index + 1}`;
+        name =
+          `Columna_${index + 1}`;
       }
 
-      const normalized =
+      const key =
         name.toLowerCase();
 
-      if (!used.has(normalized)) {
-        used.set(normalized, 1);
+      if (!used.has(key)) {
+        used.set(key, 1);
         result.push(name);
         return;
       }
 
       const count =
-        used.get(normalized) + 1;
+        used.get(key) + 1;
 
-      used.set(
-        normalized,
-        count
-      );
+      used.set(key, count);
 
       result.push(
         `${name}_${count}`
@@ -310,29 +292,22 @@
     return result;
   }
 
-  function detectColumn(
-    headers,
-    candidates
-  ) {
+  function detectColumn(headers, candidates) {
     if (!Array.isArray(headers)) {
       return null;
     }
 
-    const normalizedHeaders =
+    const normalized =
       headers.map(h =>
         normalizeHeaderName(h)
       );
 
     for (const candidate of candidates) {
       const target =
-        normalizeHeaderName(
-          candidate
-        );
+        normalizeHeaderName(candidate);
 
       const index =
-        normalizedHeaders.indexOf(
-          target
-        );
+        normalized.indexOf(target);
 
       if (index >= 0) {
         return headers[index];
@@ -343,27 +318,25 @@
   }
 
   function detectSpecialColumns() {
-    const yearColumn =
-      detectColumn(
+    return {
+      año: detectColumn(
         currentHeaders,
         [
           "Año",
           "Ano",
           "Year"
         ]
-      );
+      ),
 
-    const dateColumn =
-      detectColumn(
+      fecha: detectColumn(
         currentHeaders,
         [
           "Fecha",
           "Date"
         ]
-      );
+      ),
 
-    const totalColumn =
-      detectColumn(
+      total_teus: detectColumn(
         currentHeaders,
         [
           "Total TEUs",
@@ -372,57 +345,23 @@
           "Total TEU",
           "Total"
         ]
-      );
+      ),
 
-    const localColumn =
-      detectColumn(
+      local: detectColumn(
         currentHeaders,
-        [
-          "Local"
-        ]
-      );
+        ["Local"]
+      ),
 
-    const transshipmentColumn =
-      detectColumn(
+      transshipment: detectColumn(
         currentHeaders,
         [
           "Transshipment",
           "Transhipment",
           "Transshipment TEUs"
         ]
-      );
-
-    return {
-      año: yearColumn,
-      fecha: dateColumn,
-      total_teus: totalColumn,
-      local: localColumn,
-      transshipment:
-        transshipmentColumn
+      )
     };
   }
-
-  /* =========================================================
-   * DETECCIÓN DE TIPOS
-   * ========================================================= */
-
-  /*
-   * IMPORTANTE v0.4.14
-   *
-   * Antes:
-   *
-   *   cualquier número entre 20000 y 80000
-   *   podía interpretarse como fecha Excel.
-   *
-   * Eso provocaba que:
-   *
-   *   Transshipment = 31391
-   *
-   * fuera detectado como DATE.
-   *
-   * Ahora NO utilizamos números Excel seriales
-   * como evidencia automática de fecha.
-   */
 
   function isDateHeader(name) {
     const normalized =
@@ -430,33 +369,28 @@
 
     return [
       "fecha",
-      "date"
-    ].includes(normalized);
-  }
-
-  function isCombinedDateHeader(name) {
-    const normalized =
-      normalizeHeaderName(name);
-
-    return [
+      "date",
       "fechacombinada",
       "fechaevento"
     ].includes(normalized);
   }
 
-  function looksLikeTextDate(value) {
+  /*
+   * IMPORTANTE:
+   *
+   * Los números NO se consideran fechas
+   * únicamente por estar dentro del rango
+   * de números seriales de Excel.
+   *
+   * Una fecha numérica solamente será DATE
+   * si el encabezado indica que es una fecha.
+   */
+  function looksLikeDate(value) {
     if (value instanceof Date) {
       return true;
     }
 
-    if (
-      typeof value === "number" ||
-      typeof value === "bigint"
-    ) {
-      /*
-       * MUY IMPORTANTE:
-       * Los números no se consideran fecha aquí.
-       */
+    if (typeof value === "number") {
       return false;
     }
 
@@ -467,42 +401,11 @@
       return false;
     }
 
-    /*
-     * YYYY-MM-DD
-     */
-    if (
-      /^\d{4}-\d{1,2}-\d{1,2}$/.test(
-        text
-      )
-    ) {
-      return true;
-    }
-
-    /*
-     * DD/MM/YYYY
-     * DD-MM-YYYY
-     */
-    if (
-      /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(
-        text
-      )
-    ) {
-      return true;
-    }
-
-    /*
-     * ene/2025
-     * enero/2025
-     */
-    if (
-      /^[A-Za-zÁÉÍÓÚáéíóúÑñ]+[\/-]\d{4}$/.test(
-        text
-      )
-    ) {
-      return true;
-    }
-
-    return false;
+    return (
+      /^\d{4}-\d{1,2}-\d{1,2}$/.test(text) ||
+      /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(text) ||
+      /^[A-Za-zÁÉÍÓÚáéíóú]+[\/-]\d{4}$/.test(text)
+    );
   }
 
   function looksLikeInteger(value) {
@@ -515,41 +418,15 @@
     }
 
     const text =
-      safeString(value).trim();
-
-    if (!text) {
-      return false;
-    }
-
-    return /^-?\d+$/.test(
-      text.replace(/,/g, "")
-    );
-  }
-
-  function looksLikeNumeric(value) {
-    if (
-      typeof value === "number" &&
-      Number.isFinite(value)
-    ) {
-      return true;
-    }
-
-    if (typeof value === "bigint") {
-      return true;
-    }
-
-    const text =
       safeString(value)
-        .replace(/,/g, "")
-        .trim();
+        .trim()
+        .replace(/,/g, "");
 
     if (!text) {
       return false;
     }
 
-    return Number.isFinite(
-      Number(text)
-    );
+    return /^-?\d+$/.test(text);
   }
 
   function inferColumnType(
@@ -570,97 +447,58 @@
     const nonEmptyValues =
       values.length;
 
-    /*
-     * CORRECCIÓN IMPORTANTE:
-     * Siempre declarar la variable antes
-     * de utilizarla.
-     */
-    const resultBase = {
-      column_index: columnIndex,
-      column_name: columnName,
-      non_empty_values:
-        nonEmptyValues
-    };
-
-    if (nonEmptyValues === 0) {
+    if (!nonEmptyValues) {
       return {
-        ...resultBase,
+        column_index: columnIndex,
+        column_name: columnName,
         duckdb_type: "VARCHAR",
         sqlType: "VARCHAR",
         confidence: "low",
-        reason:
-          "columna sin valores"
+        reason: "columna sin valores",
+        non_empty_values: 0
       };
     }
 
     /*
-     * Si el encabezado es claramente Fecha,
-     * se intenta interpretar como DATE.
-     *
-     * No se utiliza el rango 20000-80000.
+     * PRIMERO:
+     * Si el encabezado es fecha,
+     * podemos aceptar fechas numéricas
+     * de Excel.
      */
     if (isDateHeader(columnName)) {
-      const dateCompatibleCount =
-        values.filter(
-          looksLikeTextDate
-        ).length;
-
-      const actualDateCount =
-        values.filter(
+      const dateCompatible =
+        values.every(
           value =>
-            value instanceof Date
-        ).length;
+            value instanceof Date ||
+            typeof value === "number" ||
+            looksLikeDate(value)
+        );
 
-      if (
-        dateCompatibleCount +
-          actualDateCount ===
-        values.length
-      ) {
+      if (dateCompatible) {
         return {
-          ...resultBase,
+          column_index: columnIndex,
+          column_name: columnName,
           duckdb_type: "DATE",
           sqlType: "DATE",
           confidence: "high",
           reason:
-            "encabezado de fecha y valores compatibles con fecha"
+            "encabezado de fecha y valores compatibles",
+          non_empty_values:
+            nonEmptyValues
         };
       }
     }
 
     /*
-     * Fecha Combinada normalmente es texto:
+     * DESPUÉS:
+     * Detectamos enteros.
      *
-     * 2025-enero
-     * 2026-febrero
+     * Esto evita que:
+     * Local = 87840
+     * Transshipment = 31391
+     * Total TEUs = 119231
      *
-     * No la convertimos automáticamente a DATE.
-     */
-    if (
-      isCombinedDateHeader(
-        columnName
-      )
-    ) {
-      return {
-        ...resultBase,
-        duckdb_type: "VARCHAR",
-        sqlType: "VARCHAR",
-        confidence: "high",
-        reason:
-          "columna combinada tratada como texto"
-      };
-    }
-
-    /*
-     * ENTEROS
-     *
-     * Esta comprobación viene ANTES de cualquier
-     * detección numérica de fecha.
-     *
-     * Por tanto:
-     *
-     * 31391 -> BIGINT
-     * 49818 -> BIGINT
-     * 79397 -> BIGINT
+     * sean interpretados como fechas.
      */
     if (
       values.every(
@@ -668,72 +506,84 @@
       )
     ) {
       return {
-        ...resultBase,
+        column_index: columnIndex,
+        column_name: columnName,
         duckdb_type: "BIGINT",
         sqlType: "BIGINT",
         confidence: "high",
         reason:
-          "todos los valores son enteros"
+          "todos los valores son enteros",
+        non_empty_values:
+          nonEmptyValues
       };
     }
 
-    /*
-     * NUMÉRICOS DECIMALES
-     */
-    if (
-      values.every(
-        looksLikeNumeric
-      )
-    ) {
+    const numeric =
+      values.every(value => {
+        if (
+          typeof value === "number"
+        ) {
+          return Number.isFinite(
+            value
+          );
+        }
+
+        const text =
+          safeString(value)
+            .replace(/,/g, "")
+            .trim();
+
+        return (
+          text !== "" &&
+          Number.isFinite(
+            Number(text)
+          )
+        );
+      });
+
+    if (numeric) {
       return {
-        ...resultBase,
+        column_index: columnIndex,
+        column_name: columnName,
         duckdb_type: "DOUBLE",
         sqlType: "DOUBLE",
-        confidence: "medium",
+        confidence: "high",
         reason:
-          "todos los valores son numéricos"
+          "todos los valores son numéricos",
+        non_empty_values:
+          nonEmptyValues
       };
     }
 
-    /*
-     * TEXTO
-     */
     return {
-      ...resultBase,
+      column_index: columnIndex,
+      column_name: columnName,
       duckdb_type: "VARCHAR",
       sqlType: "VARCHAR",
       confidence: "medium",
       reason:
-        "valores tratados como texto"
+        "valores tratados como texto",
+      non_empty_values:
+        nonEmptyValues
     };
   }
 
-  /* =========================================================
-   * FECHAS PARA INSERTAR EN DUCKDB
-   * ========================================================= */
-
   function excelSerialToDate(serial) {
-    const n =
-      Number(serial);
+    const n = Number(serial);
 
     if (!Number.isFinite(n)) {
       return null;
     }
 
-    const excelEpoch =
-      Date.UTC(
-        1899,
-        11,
-        30
-      );
+    const epoch =
+      Date.UTC(1899, 11, 30);
 
-    const millis =
-      excelEpoch +
+    return new Date(
+      epoch +
       Math.round(
         n * 86400000
-      );
-
-    return new Date(millis);
+      )
+    );
   }
 
   function normalizeExcelDate(value) {
@@ -741,22 +591,12 @@
       return value;
     }
 
-    /*
-     * En v0.4.14 ya no utilizamos números
-     * seriales automáticamente.
-     *
-     * Si SheetJS entregó un número en una
-     * columna que sabemos que es Fecha,
-     * entonces sí lo tratamos como serial Excel.
-     */
     if (
       typeof value === "number" &&
       value > 20000 &&
       value < 80000
     ) {
-      return excelSerialToDate(
-        value
-      );
+      return excelSerialToDate(value);
     }
 
     const text =
@@ -767,30 +607,28 @@
     }
 
     if (
-      /^\d{4}-\d{1,2}-\d{1,2}$/.test(
-        text
-      )
+      /^\d{4}-\d{1,2}-\d{1,2}$/.test(text)
     ) {
-      const d =
+      const date =
         new Date(
           `${text}T00:00:00Z`
         );
 
       return Number.isNaN(
-        d.getTime()
+        date.getTime()
       )
         ? null
-        : d;
+        : date;
     }
 
-    const d =
+    const date =
       new Date(text);
 
     return Number.isNaN(
-      d.getTime()
+      date.getTime()
     )
       ? null
-      : d;
+      : date;
   }
 
   function dateToSql(date) {
@@ -798,25 +636,18 @@
       return null;
     }
 
-    const y =
-      date.getUTCFullYear();
-
-    const m =
+    return (
+      date.getUTCFullYear() +
+      "-" +
       String(
         date.getUTCMonth() + 1
-      ).padStart(2, "0");
-
-    const d =
+      ).padStart(2, "0") +
+      "-" +
       String(
         date.getUTCDate()
-      ).padStart(2, "0");
-
-    return `${y}-${m}-${d}`;
+      ).padStart(2, "0")
+    );
   }
-
-  /* =========================================================
-   * SQL
-   * ========================================================= */
 
   function valueToSql(
     value,
@@ -828,76 +659,59 @@
 
     if (type === "DATE") {
       const date =
-        normalizeExcelDate(
-          value
-        );
+        normalizeExcelDate(value);
 
       if (!date) {
         return "NULL";
       }
 
-      return `DATE '${dateToSql(
-        date
-      )}'`;
-    }
-
-    if (type === "BIGINT") {
-      const text =
-        safeString(value)
-          .replace(/,/g, "")
-          .trim();
-
-      const n =
-        Number(text);
-
-      if (!Number.isFinite(n)) {
-        return "NULL";
-      }
-
-      return String(
-        Math.trunc(n)
+      return (
+        "DATE '" +
+        dateToSql(date) +
+        "'"
       );
     }
 
-    if (type === "DOUBLE") {
-      const text =
-        safeString(value)
-          .replace(/,/g, "")
-          .trim();
-
+    if (
+      type === "BIGINT" ||
+      type === "DOUBLE"
+    ) {
       const n =
-        Number(text);
+        Number(
+          safeString(value)
+            .replace(/,/g, "")
+            .trim()
+        );
 
       if (!Number.isFinite(n)) {
         return "NULL";
       }
 
-      return String(n);
+      return type === "BIGINT"
+        ? String(Math.trunc(n))
+        : String(n);
     }
 
-    return `'${escapeSqlString(
-      value
-    )}'`;
+    return (
+      "'" +
+      escapeSqlString(value) +
+      "'"
+    );
   }
 
   function buildCreateTableSql(
     headers,
-    inferredTypes
+    types
   ) {
     const columns =
       headers.map(
-        (header, index) => {
-          const type =
-            inferredTypes[index]
-              ?.sqlType ||
-            "VARCHAR";
-
-          return (
-            `${escapeSqlIdentifier(
-              header
-            )} ${type}`
-          );
-        }
+        (header, index) =>
+          `${escapeSqlIdentifier(
+            header
+          )} ${
+            types[index]?.sqlType ||
+            "VARCHAR"
+          }`
       );
 
     return `
@@ -910,7 +724,7 @@
   function buildInsertSql(
     headers,
     rows,
-    inferredTypes
+    types
   ) {
     const columnSql =
       headers
@@ -919,36 +733,30 @@
         )
         .join(", ");
 
-    const statements = [];
-
-    for (const row of rows) {
-      const values =
-        headers.map(
-          (_, index) =>
-            valueToSql(
-              row[index],
-              inferredTypes[index]
-                ?.sqlType ||
-                "VARCHAR"
-            )
-        );
-
-      statements.push(
-        `(${values.join(", ")})`
+    const values =
+      rows.map(row =>
+        "(" +
+        headers
+          .map(
+            (_, index) =>
+              valueToSql(
+                row[index],
+                types[index]
+                  ?.sqlType ||
+                  "VARCHAR"
+              )
+          )
+          .join(", ") +
+        ")"
       );
-    }
 
     return `
       INSERT INTO excel_data
       (${columnSql})
       VALUES
-      ${statements.join(",\n")};
+      ${values.join(",\n")};
     `;
   }
-
-  /* =========================================================
-   * DUCKDB
-   * ========================================================= */
 
   async function loadLibraries() {
     if (!duckdb) {
@@ -991,16 +799,11 @@
       );
 
     worker =
-      new Worker(
-        workerURL
-      );
-
-    const logger =
-      new duckdb.ConsoleLogger();
+      new Worker(workerURL);
 
     db =
       new duckdb.AsyncDuckDB(
-        logger,
+        new duckdb.ConsoleLogger(),
         worker
       );
 
@@ -1018,38 +821,22 @@
       return;
     }
 
-    try {
-      await conn.query(
-        "DROP TABLE IF EXISTS excel_data;"
-      );
-    } catch (_) {
-      /* Ignorar */
-    }
+    await conn.query(
+      "DROP TABLE IF EXISTS excel_data;"
+    );
   }
 
   async function queryRows(sql) {
     const result =
       await conn.query(sql);
 
-    const rows =
-      result.toArray();
-
     return normalizeRows(
-      rows
+      result.toArray()
     );
   }
 
   async function getDuckDBVersion() {
     try {
-      /*
-       * No usamos:
-       *
-       * SELECT version
-       * FROM pragma_version();
-       *
-       * porque esa columna no existe
-       * en esta versión de DuckDB.
-       */
       return await queryRows(
         "SELECT * FROM pragma_version();"
       );
@@ -1063,24 +850,26 @@
     }
   }
 
+  /*
+   * CORRECCIÓN IMPORTANTE:
+   *
+   * DuckDB 1.1.1 usa DATA_TYPE,
+   * no COLUMN_TYPE en
+   * information_schema.columns.
+   */
   async function getSchema() {
     return queryRows(`
       SELECT
         column_name,
-        column_type,
-        null,
-        key,
-        default,
-        extra
+        data_type AS column_type,
+        is_nullable AS null,
+        column_default AS default_value,
+        ordinal_position
       FROM information_schema.columns
       WHERE table_name = 'excel_data'
       ORDER BY ordinal_position;
     `);
   }
-
-  /* =========================================================
-   * LECTURA DE EXCEL
-   * ========================================================= */
 
   function readWorksheet(
     worksheet
@@ -1106,46 +895,31 @@
       };
     }
 
-    const rawHeaders =
-      matrix[0] || [];
-
     const headers =
       makeUniqueHeaders(
-        rawHeaders
+        matrix[0] || []
       );
 
     const data =
       matrix.slice(1);
 
-    const normalizedRows =
-      data.map(row => {
-        const result = [];
-
-        for (
-          let i = 0;
-          i < headers.length;
-          i++
-        ) {
-          result.push(
-            row?.[i] ?? null
-          );
-        }
-
-        return result;
-      });
+    const normalized =
+      data.map(row =>
+        headers.map(
+          (_, index) =>
+            row?.[index] ??
+            null
+        )
+      );
 
     const realRows =
-      normalizedRows.filter(
+      normalized.filter(
         row =>
           row.some(
             value =>
               !isEmptyValue(value)
           )
       );
-
-    const emptyRows =
-      normalizedRows.length -
-      realRows.length;
 
     return {
       headers,
@@ -1154,7 +928,9 @@
         matrix.length,
       realRows:
         realRows.length,
-      emptyRows
+      emptyRows:
+        normalized.length -
+        realRows.length
     };
   }
 
@@ -1182,26 +958,23 @@
       currentWorkbook =
         workbook;
 
-      const sheetNames =
+      const sheets =
         workbook.SheetNames || [];
 
-      if (!sheetNames.length) {
+      if (!sheets.length) {
         throw new Error(
           "El archivo Excel no contiene hojas."
         );
       }
 
       currentSheetName =
-        sheetNames[0];
-
-      const worksheet =
-        workbook.Sheets[
-          currentSheetName
-        ];
+        sheets[0];
 
       const parsed =
         readWorksheet(
-          worksheet
+          workbook.Sheets[
+            currentSheetName
+          ]
         );
 
       currentHeaders =
@@ -1222,7 +995,7 @@
         );
       }
 
-      const inferredTypes =
+      currentTypes =
         currentHeaders.map(
           (header, index) =>
             inferColumnType(
@@ -1232,42 +1005,29 @@
             )
         );
 
-      currentInferredTypes =
-        inferredTypes;
-
-      const createSql =
+      await conn.query(
         buildCreateTableSql(
           currentHeaders,
-          inferredTypes
-        );
-
-      await conn.query(
-        createSql
+          currentTypes
+        )
       );
 
-      const insertSql =
+      await conn.query(
         buildInsertSql(
           currentHeaders,
           currentRows,
-          inferredTypes
-        );
-
-      await conn.query(
-        insertSql
+          currentTypes
+        )
       );
-
-      const version =
-        await getDuckDBVersion();
-
-      const schema =
-        await getSchema();
 
       const count =
         await queryRows(`
-          SELECT
-            COUNT(*) AS registros
+          SELECT COUNT(*) AS registros
           FROM excel_data;
         `);
+
+      const schema =
+        await getSchema();
 
       const preview =
         await queryRows(`
@@ -1276,83 +1036,39 @@
           LIMIT 10;
         `);
 
-      const specialColumns =
-        detectSpecialColumns();
-
-      const result = {
-        procesamiento:
-          "LOCAL",
-
-        engine:
-          APP_ID,
-
-        version:
-          VERSION,
-
-        archivo:
-          file.name,
-
-        tamano_bytes:
-          file.size,
-
-        hojas:
-          sheetNames,
-
+      setResult({
+        procesamiento: "LOCAL",
+        engine: APP_ID,
+        version: VERSION,
+        archivo: file.name,
+        tamano_bytes: file.size,
+        hojas: sheets,
         hoja_principal:
           currentSheetName,
-
         filas_fisicas_detectadas:
           parsed.physicalRows,
-
         filas_reales:
           parsed.realRows,
-
         filas_vacias_ignoradas:
           parsed.emptyRows,
-
         filas_insertadas:
           currentRows.length,
-
         columnas_detectadas:
           currentHeaders.length,
-
         encabezados:
           currentHeaders,
-
         tipos_inferidos:
-          inferredTypes,
-
+          currentTypes,
         columnas_especiales_detectadas:
-          specialColumns,
-
+          detectSpecialColumns(),
         duckdb_table:
           "excel_data",
-
         duckdb_version:
-          version,
-
-        count:
-          count,
-
-        schema:
-          schema,
-
-        preview:
-          preview,
-
-        bundle: {
-          mainModule:
-            "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-eh.wasm",
-
-          mainWorker:
-            "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-eh.worker.js",
-
-          pthreadWorker:
-            null
-        }
-      };
-
-      setResult(result);
+          await getDuckDBVersion(),
+        count,
+        schema,
+        preview
+      });
 
       updateStatus(
         `Excel cargado localmente: ${file.name} — ${currentRows.length} registros`
@@ -1360,16 +1076,11 @@
 
     } catch (error) {
       showError(error);
-
       updateStatus(
         "Error al cargar Excel"
       );
     }
   }
-
-  /* =========================================================
-   * SQL
-   * ========================================================= */
 
   async function executeSql(
     sql,
@@ -1382,10 +1093,7 @@
         );
       }
 
-      if (
-        !sql ||
-        !sql.trim()
-      ) {
+      if (!sql?.trim()) {
         throw new Error(
           "Introduce una consulta SQL."
         );
@@ -1395,30 +1103,22 @@
         performance.now();
 
       const rows =
-        await queryRows(
-          sql
-        );
+        await queryRows(sql);
 
       const elapsed =
         performance.now() -
         start;
 
       setResult({
-        procesamiento:
-          "LOCAL",
-
+        procesamiento: "LOCAL",
         sql,
-
         filas_resultado:
           rows.length,
-
         tiempo_ms:
           Number(
             elapsed.toFixed(1)
           ),
-
-        resultado:
-          rows
+        resultado: rows
       });
 
       updateStatus(
@@ -1433,16 +1133,13 @@
       updateStatus(
         `Error en ${label}`
       );
-
-      throw error;
     }
   }
 
   async function countRows() {
     return executeSql(
       `
-      SELECT
-        COUNT(*) AS registros
+      SELECT COUNT(*) AS registros
       FROM excel_data;
       `,
       "COUNT"
@@ -1460,353 +1157,221 @@
     );
   }
 
-  /* =========================================================
-   * RESUMEN
-   * ========================================================= */
-
   async function summary() {
     try {
-      if (!conn) {
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
-
       const schema =
         await getSchema();
 
-      const numericColumns =
+      const numeric =
         schema.filter(
-          column =>
-            /BIGINT|DOUBLE|DECIMAL|INTEGER|HUGEINT|FLOAT/i.test(
+          c =>
+            /BIGINT|DOUBLE|DECIMAL|INTEGER|HUGEINT|FLOAT|SMALLINT/i.test(
               safeString(
-                column.column_type
+                c.column_type
               )
             )
         );
 
-      if (!numericColumns.length) {
+      if (!numeric.length) {
         throw new Error(
           "No se encontraron columnas numéricas."
         );
       }
 
-      const expressions = [];
+      const expressions =
+        numeric.flatMap(c => {
+          const q =
+            escapeSqlIdentifier(
+              c.column_name
+            );
 
-      for (
-        const column of numericColumns
-      ) {
-        const name =
-          column.column_name;
+          return [
+            `SUM(${q}) AS ${escapeSqlIdentifier(
+              c.column_name +
+              "__sum"
+            )}`,
+            `AVG(${q}) AS ${escapeSqlIdentifier(
+              c.column_name +
+              "__avg"
+            )}`,
+            `MIN(${q}) AS ${escapeSqlIdentifier(
+              c.column_name +
+              "__min"
+            )}`,
+            `MAX(${q}) AS ${escapeSqlIdentifier(
+              c.column_name +
+              "__max"
+            )}`
+          ];
+        });
 
-        const q =
-          escapeSqlIdentifier(
-            name
-          );
-
-        expressions.push(
-          `SUM(${q}) AS ${escapeSqlIdentifier(
-            `${name}__sum`
-          )}`
-        );
-
-        expressions.push(
-          `AVG(${q}) AS ${escapeSqlIdentifier(
-            `${name}__avg`
-          )}`
-        );
-
-        expressions.push(
-          `MIN(${q}) AS ${escapeSqlIdentifier(
-            `${name}__min`
-          )}`
-        );
-
-        expressions.push(
-          `MAX(${q}) AS ${escapeSqlIdentifier(
-            `${name}__max`
-          )}`
-        );
-      }
-
-      const sql = `
+      return executeSql(
+        `
         SELECT
           ${expressions.join(",\n")}
         FROM excel_data;
-      `;
-
-      return executeSql(
-        sql,
+        `,
         "Resumen"
       );
 
     } catch (error) {
       showError(error);
-
-      updateStatus(
-        "Error al generar resumen"
-      );
     }
   }
-
-  /* =========================================================
-   * TOTAL POR AÑO
-   * ========================================================= */
 
   async function totalByYear() {
-    try {
-      if (!conn) {
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
+    const special =
+      detectSpecialColumns();
 
-      const special =
-        detectSpecialColumns();
-
-      const yearColumn =
-        special.año;
-
-      const totalColumn =
-        special.total_teus;
-
-      if (!yearColumn) {
-        throw new Error(
-          `No se encontró la columna de año. Columnas disponibles: ${currentHeaders.join(", ")}`
-        );
-      }
-
-      if (!totalColumn) {
-        throw new Error(
-          `No se encontró la columna de Total TEUs. Columnas disponibles: ${currentHeaders.join(", ")}`
-        );
-      }
-
-      const yearSql =
-        escapeSqlIdentifier(
-          yearColumn
-        );
-
-      const totalSql =
-        escapeSqlIdentifier(
-          totalColumn
-        );
-
-      const sql = `
-        SELECT
-          ${yearSql} AS año,
-          SUM(${totalSql}) AS total
-        FROM excel_data
-        GROUP BY ${yearSql}
-        ORDER BY ${yearSql};
-      `;
-
-      return executeSql(
-        sql,
-        "Total por año"
-      );
-
-    } catch (error) {
-      showError(error);
-
-      updateStatus(
-        "Error en Total por año"
+    if (!special.año) {
+      throw new Error(
+        "No se encontró la columna Año."
       );
     }
-  }
 
-  /* =========================================================
-   * TOTAL POR MES
-   * ========================================================= */
+    if (!special.total_teus) {
+      throw new Error(
+        "No se encontró la columna Total TEUs."
+      );
+    }
+
+    const year =
+      escapeSqlIdentifier(
+        special.año
+      );
+
+    const total =
+      escapeSqlIdentifier(
+        special.total_teus
+      );
+
+    return executeSql(
+      `
+      SELECT
+        ${year} AS año,
+        SUM(${total}) AS total
+      FROM excel_data
+      GROUP BY ${year}
+      ORDER BY ${year};
+      `,
+      "Total por año"
+    );
+  }
 
   async function totalByMonth() {
-    try {
-      if (!conn) {
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
+    const special =
+      detectSpecialColumns();
 
-      const special =
-        detectSpecialColumns();
-
-      const yearColumn =
-        special.año;
-
-      const totalColumn =
-        special.total_teus;
-
-      const monthColumn =
-        detectColumn(
-          currentHeaders,
-          [
-            "Mes",
-            "Month"
-          ]
-        );
-
-      if (!yearColumn) {
-        throw new Error(
-          "No se encontró la columna Año."
-        );
-      }
-
-      if (!monthColumn) {
-        throw new Error(
-          "No se encontró la columna Mes."
-        );
-      }
-
-      if (!totalColumn) {
-        throw new Error(
-          "No se encontró la columna Total TEUs."
-        );
-      }
-
-      const yearSql =
-        escapeSqlIdentifier(
-          yearColumn
-        );
-
-      const monthSql =
-        escapeSqlIdentifier(
-          monthColumn
-        );
-
-      const totalSql =
-        escapeSqlIdentifier(
-          totalColumn
-        );
-
-      const sql = `
-        SELECT
-          ${yearSql} AS año,
-          ${monthSql} AS mes,
-          SUM(${totalSql}) AS total
-        FROM excel_data
-        GROUP BY
-          ${yearSql},
-          ${monthSql}
-        ORDER BY
-          ${yearSql},
-          ${monthSql};
-      `;
-
-      return executeSql(
-        sql,
-        "Total por mes"
+    const month =
+      detectColumn(
+        currentHeaders,
+        ["Mes", "Month"]
       );
 
-    } catch (error) {
-      showError(error);
-
-      updateStatus(
-        "Error en Total por mes"
+    if (!special.año) {
+      throw new Error(
+        "No se encontró la columna Año."
       );
     }
-  }
 
-  /* =========================================================
-   * TOTAL POR LOCAL
-   * ========================================================= */
+    if (!month) {
+      throw new Error(
+        "No se encontró la columna Mes."
+      );
+    }
+
+    if (!special.total_teus) {
+      throw new Error(
+        "No se encontró la columna Total TEUs."
+      );
+    }
+
+    const year =
+      escapeSqlIdentifier(
+        special.año
+      );
+
+    const monthSql =
+      escapeSqlIdentifier(
+        month
+      );
+
+    const total =
+      escapeSqlIdentifier(
+        special.total_teus
+      );
+
+    return executeSql(
+      `
+      SELECT
+        ${year} AS año,
+        ${monthSql} AS mes,
+        SUM(${total}) AS total
+      FROM excel_data
+      GROUP BY
+        ${year},
+        ${monthSql}
+      ORDER BY
+        ${year},
+        ${monthSql};
+      `,
+      "Total por mes"
+    );
+  }
 
   async function totalByLocal() {
-    try {
-      if (!conn) {
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
+    const special =
+      detectSpecialColumns();
 
-      const special =
-        detectSpecialColumns();
-
-      if (!special.local) {
-        throw new Error(
-          "No se encontró la columna Local."
-        );
-      }
-
-      if (!special.total_teus) {
-        throw new Error(
-          "No se encontró la columna Total TEUs."
-        );
-      }
-
-      const localSql =
-        escapeSqlIdentifier(
-          special.local
-        );
-
-      const totalSql =
-        escapeSqlIdentifier(
-          special.total_teus
-        );
-
-      const sql = `
-        SELECT
-          ${localSql} AS local,
-          SUM(${totalSql}) AS total
-        FROM excel_data
-        GROUP BY ${localSql}
-        ORDER BY total DESC;
-      `;
-
-      return executeSql(
-        sql,
-        "Total por Local"
-      );
-
-    } catch (error) {
-      showError(error);
-
-      updateStatus(
-        "Error en Total por Local"
+    if (!special.local) {
+      throw new Error(
+        "No se encontró la columna Local."
       );
     }
-  }
 
-  /* =========================================================
-   * ESQUEMA
-   * ========================================================= */
+    if (!special.total_teus) {
+      throw new Error(
+        "No se encontró la columna Total TEUs."
+      );
+    }
+
+    const local =
+      escapeSqlIdentifier(
+        special.local
+      );
+
+    const total =
+      escapeSqlIdentifier(
+        special.total_teus
+      );
+
+    return executeSql(
+      `
+      SELECT
+        ${local} AS local,
+        SUM(${total}) AS total
+      FROM excel_data
+      GROUP BY ${local}
+      ORDER BY total DESC;
+      `,
+      "Total por Local"
+    );
+  }
 
   async function showSchema() {
     try {
-      if (!conn) {
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
-
-      const schema =
-        await getSchema();
-
       setResult({
-        procesamiento:
-          "LOCAL",
-
-        tabla:
-          "excel_data",
-
+        procesamiento: "LOCAL",
+        tabla: "excel_data",
         columnas:
-          schema,
-
+          await getSchema(),
         columnas_especiales_detectadas:
           detectSpecialColumns()
       });
-
-      updateStatus(
-        "Esquema mostrado"
-      );
-
     } catch (error) {
       showError(error);
     }
   }
-
-  /* =========================================================
-   * EDITOR SQL
-   * ========================================================= */
 
   async function runSqlFromEditor() {
     const editor =
@@ -1815,31 +1380,16 @@
       );
 
     if (!editor) {
-      showError(
-        new Error(
-          "No se encontró el editor SQL."
-        )
-      );
-
       return;
     }
 
-    const sql =
-      editor.value.trim();
-
     await executeSql(
-      sql,
+      editor.value.trim(),
       "SQL"
     );
   }
 
-  /* =========================================================
-   * UI
-   * ========================================================= */
-
-  function updateStatus(
-    message
-  ) {
+  function updateStatus(message) {
     const status =
       document.getElementById(
         "tm-excel-status"
@@ -1870,44 +1420,35 @@
       "tm-excel-engine-panel";
 
     panel.innerHTML = `
-      <div
-        style="
-          font-family:Arial,sans-serif;
-          width:100%;
-          box-sizing:border-box;
-        "
-      >
+      <div style="
+        font-family:Arial,sans-serif;
+        width:100%;
+        box-sizing:border-box;
+      ">
 
-        <div
-          style="
-            font-size:18px;
-            font-weight:bold;
-            margin-bottom:6px;
-          "
-        >
+        <div style="
+          font-size:18px;
+          font-weight:bold;
+          margin-bottom:6px;
+        ">
           📊 Excel Data Engine
         </div>
 
-        <div
-          style="
-            font-size:12px;
-            opacity:.75;
-            margin-bottom:10px;
-          "
-        >
+        <div style="
+          font-size:12px;
+          opacity:.75;
+          margin-bottom:10px;
+        ">
           ${VERSION} —
           Todo el procesamiento se realiza localmente.
         </div>
 
-        <div
-          id="tm-excel-status"
-          style="
-            padding:8px;
-            margin-bottom:10px;
-            border:1px solid #ddd;
-            border-radius:6px;
-          "
-        >
+        <div id="tm-excel-status" style="
+          padding:8px;
+          margin-bottom:10px;
+          border:1px solid #ddd;
+          border-radius:6px;
+        ">
           Motor listo. Carga un archivo Excel.
         </div>
 
@@ -1915,79 +1456,50 @@
           id="tm-excel-file"
           type="file"
           accept=".xlsx,.xls,.xlsm"
-          style="
-            width:100%;
-            margin-bottom:10px;
-          "
+          style="width:100%;margin-bottom:10px;"
         />
 
-        <div
-          style="
-            display:grid;
-            grid-template-columns:
-              repeat(2,minmax(0,1fr));
-            gap:6px;
-            margin-bottom:10px;
-          "
-        >
+        <div style="
+          display:grid;
+          grid-template-columns:repeat(2,minmax(0,1fr));
+          gap:6px;
+          margin-bottom:10px;
+        ">
 
-          <button
-            id="tm-excel-count"
-            type="button"
-          >
+          <button id="tm-excel-count">
             COUNT
           </button>
 
-          <button
-            id="tm-excel-preview"
-            type="button"
-          >
+          <button id="tm-excel-preview">
             Vista previa
           </button>
 
-          <button
-            id="tm-excel-summary"
-            type="button"
-          >
+          <button id="tm-excel-summary">
             Resumen
           </button>
 
-          <button
-            id="tm-excel-year"
-            type="button"
-          >
+          <button id="tm-excel-year">
             Total por año
           </button>
 
-          <button
-            id="tm-excel-month"
-            type="button"
-          >
+          <button id="tm-excel-month">
             Total por mes
           </button>
 
-          <button
-            id="tm-excel-local"
-            type="button"
-          >
+          <button id="tm-excel-local">
             Total por Local
           </button>
 
-          <button
-            id="tm-excel-schema"
-            type="button"
-          >
+          <button id="tm-excel-schema">
             Esquema
           </button>
 
         </div>
 
-        <div
-          style="
-            font-weight:bold;
-            margin-bottom:5px;
-          "
-        >
+        <div style="
+          font-weight:bold;
+          margin-bottom:5px;
+        ">
           Ejecutar SQL
         </div>
 
@@ -2007,16 +1519,13 @@
           "
         >SELECT
     "Año",
-    SUM("Local") AS total_local,
-    SUM("Transshipment") AS total_transshipment,
-    SUM("Total TEUs") AS total_teus
+    SUM("Total TEUs") AS total
 FROM excel_data
 GROUP BY "Año"
 ORDER BY "Año";</textarea>
 
         <button
           id="tm-excel-run-sql"
-          type="button"
           style="
             margin-top:6px;
             width:100%;
@@ -2025,13 +1534,11 @@ ORDER BY "Año";</textarea>
           Ejecutar SQL
         </button>
 
-        <div
-          style="
-            font-weight:bold;
-            margin-top:12px;
-            margin-bottom:5px;
-          "
-        >
+        <div style="
+          font-weight:bold;
+          margin-top:12px;
+          margin-bottom:5px;
+        ">
           Resultado
         </div>
 
@@ -2054,175 +1561,110 @@ ORDER BY "Año";</textarea>
       </div>
     `;
 
-    /*
-     * Intentamos integrarlo como panel lateral.
-     * Si no existe, usamos panel flotante.
-     */
-    const possibleHosts = [
-      "#right-sidebar",
-      "[data-testid='right-sidebar']",
-      ".right-sidebar",
-      "aside"
-    ];
-
-    let host = null;
-
-    for (
-      const selector of possibleHosts
-    ) {
-      host =
-        document.querySelector(
-          selector
-        );
-
-      if (host) {
-        break;
-      }
-    }
+    const host =
+      document.querySelector(
+        "#right-sidebar"
+      ) ||
+      document.querySelector(
+        "[data-testid='right-sidebar']"
+      ) ||
+      document.querySelector(
+        ".right-sidebar"
+      );
 
     if (host) {
-      host.appendChild(
-        panel
-      );
+      host.appendChild(panel);
     } else {
-      panel.style.position =
-        "fixed";
-
-      panel.style.right =
-        "10px";
-
-      panel.style.top =
-        "80px";
-
-      panel.style.width =
-        "420px";
-
-      panel.style.maxHeight =
-        "calc(100vh - 100px)";
-
-      panel.style.overflow =
-        "auto";
-
-      panel.style.zIndex =
-        "999999";
-
-      panel.style.background =
-        "white";
-
-      panel.style.padding =
-        "12px";
-
-      panel.style.border =
-        "1px solid #ccc";
-
-      panel.style.borderRadius =
-        "8px";
-
-      panel.style.boxShadow =
-        "0 4px 20px rgba(0,0,0,.15)";
+      Object.assign(
+        panel.style,
+        {
+          position: "fixed",
+          right: "10px",
+          top: "80px",
+          width: "420px",
+          maxHeight:
+            "calc(100vh - 100px)",
+          overflow: "auto",
+          zIndex: "999999",
+          background: "white",
+          padding: "12px",
+          border: "1px solid #ccc",
+          borderRadius: "8px",
+          boxShadow:
+            "0 4px 20px rgba(0,0,0,.15)"
+        }
+      );
 
       document.body.appendChild(
         panel
       );
     }
 
-    const fileInput =
-      document.getElementById(
+    document
+      .getElementById(
         "tm-excel-file"
-      );
+      )
+      .addEventListener(
+        "change",
+        async event => {
+          const file =
+            event.target.files?.[0];
 
-    fileInput.addEventListener(
-      "change",
-      async event => {
-        const file =
-          event.target.files?.[0];
-
-        if (!file) {
-          return;
+          if (file) {
+            await loadExcel(file);
+          }
         }
-
-        await loadExcel(
-          file
-        );
-      }
-    );
+      );
 
     document
       .getElementById(
         "tm-excel-count"
       )
-      .addEventListener(
-        "click",
-        countRows
-      );
+      .onclick = countRows;
 
     document
       .getElementById(
         "tm-excel-preview"
       )
-      .addEventListener(
-        "click",
-        previewRows
-      );
+      .onclick = previewRows;
 
     document
       .getElementById(
         "tm-excel-summary"
       )
-      .addEventListener(
-        "click",
-        summary
-      );
+      .onclick = summary;
 
     document
       .getElementById(
         "tm-excel-year"
       )
-      .addEventListener(
-        "click",
-        totalByYear
-      );
+      .onclick = totalByYear;
 
     document
       .getElementById(
         "tm-excel-month"
       )
-      .addEventListener(
-        "click",
-        totalByMonth
-      );
+      .onclick = totalByMonth;
 
     document
       .getElementById(
         "tm-excel-local"
       )
-      .addEventListener(
-        "click",
-        totalByLocal
-      );
+      .onclick = totalByLocal;
 
     document
       .getElementById(
         "tm-excel-schema"
       )
-      .addEventListener(
-        "click",
-        showSchema
-      );
+      .onclick = showSchema;
 
     document
       .getElementById(
         "tm-excel-run-sql"
       )
-      .addEventListener(
-        "click",
-        runSqlFromEditor
-      );
+      .onclick =
+      runSqlFromEditor;
   }
-
-  /* =========================================================
-   * INICIALIZACIÓN
-   * ========================================================= */
 
   async function initialize() {
     try {
@@ -2235,26 +1677,13 @@ ORDER BY "Año";</textarea>
       await loadLibraries();
       await createDuckDB();
 
-      const version =
-        await getDuckDBVersion();
-
       updateStatus(
         `${VERSION} listo — DuckDB-Wasm cargado localmente`
       );
 
-      /*
-       * Información disponible desde consola.
-       */
       window.TMExcelEngine = {
-        version:
-          VERSION,
-
-        app_id:
-          APP_ID,
-
-        duckdb_version:
-          version,
-
+        version: VERSION,
+        app_id: APP_ID,
         executeSql,
         loadExcel,
         countRows,
@@ -2276,10 +1705,6 @@ ORDER BY "Año";</textarea>
       );
     }
   }
-
-  /* =========================================================
-   * EVITAR DOBLE INICIALIZACIÓN
-   * ========================================================= */
 
   if (
     window.__TM_EXCEL_ENGINE_0414_INITIALIZED
