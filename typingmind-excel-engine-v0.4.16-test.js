@@ -3,55 +3,39 @@
  * Extension v0.4.16 TEST
  *
  * CAMBIOS v0.4.16
+ * - Mantiene toda la lógica estable de v0.4.15.
  *
- * - Mantiene todas las correcciones de v0.4.15.
+ * - Corrige la representación de columnas DATE
+ *   devueltas por DuckDB-Wasm.
  *
- * - CORRECCIÓN PRINCIPAL:
- *   Normalización robusta de resultados DuckDB-Wasm / Arrow.
+ *   Antes:
+ *     "Fecha": 1735689600000
  *
- *   Corrige resultados que pueden aparecer como:
+ *   Ahora:
+ *     "Fecha": "2025-01-01"
  *
- *      [948618, 0, 0, 0]
+ * - Detecta resultados DATE por nombre de columna:
+ *   Fecha
+ *   Date
+ *   Fecha Combinada
+ *   Fecha Evento
  *
- *   y los convierte en:
+ * - Convierte timestamps Unix en milisegundos
+ *   a YYYY-MM-DD.
  *
- *      948618
+ * - También soporta valores DATE representados
+ *   como días desde Unix epoch.
  *
- * - La normalización ya NO depende del nombre
- *   del campo para determinar si un array debe
- *   convertirse en escalar.
+ * - NO convierte números normales en fechas.
  *
- * - Maneja:
- *   Array
- *   TypedArray
- *   Uint8Array
- *   Int32Array
- *   BigInt64Array
- *   Float64Array
- *   DataView
- *   objetos Arrow con toArray()
- *   objetos con length
+ * - Local, Transshipment, Total TEUs y Año
+ *   continúan siendo numéricos.
  *
- * - Protege especialmente resultados escalares
- *   provenientes de SUM, AVG, MIN, MAX, COUNT
- *   y expresiones matemáticas.
+ * - Mantiene information_schema.columns usando
+ *   data_type.
  *
- * - Mantiene DATE como DATE.
- *
- * - Mantiene:
- *   Año             -> BIGINT
- *   Local           -> BIGINT
- *   Transshipment   -> BIGINT
- *   Total TEUs      -> BIGINT
- *
- * - Detecta variantes:
- *   Total TEUs
- *   Total TEU's
- *   Total TEU´s
- *   Total TEU
- *   Total
- *
- * - information_schema.columns utiliza data_type.
+ * - Mantiene normalización de arrays Arrow:
+ *   [valor, 0, 0, 0] -> valor
  *
  * - Procesamiento 100% LOCAL.
  *
@@ -91,18 +75,12 @@
   let currentRows = [];
   let currentInferredTypes = [];
 
-
-  /* =========================================================
-   * UTILIDADES GENERALES
-   * ========================================================= */
-
   function safeString(value) {
     return value === null ||
       value === undefined
       ? ""
       : String(value);
   }
-
 
   function isEmptyValue(value) {
     return (
@@ -115,7 +93,6 @@
     );
   }
 
-
   function normalizeHeaderName(value) {
     return safeString(value)
       .normalize("NFD")
@@ -126,266 +103,46 @@
       .trim();
   }
 
-
-  /* =========================================================
-   * v0.4.16
-   * NORMALIZACIÓN DUCKDB / ARROW
-   * ========================================================= */
-
   /*
-   * Determina si un valor es un TypedArray.
-   *
-   * Se excluyen:
-   *   DataView
-   *   ArrayBuffer
-   */
-  function isTypedArray(value) {
-    return (
-      value !== null &&
-      value !== undefined &&
-      ArrayBuffer.isView(value) &&
-      !(value instanceof DataView)
-    );
-  }
-
-
-  /*
-   * Convierte diferentes estructuras binarias
-   * o Arrow a un array JavaScript normal.
-   */
-  function tryConvertToArray(value) {
-
-    if (Array.isArray(value)) {
-      return value.slice();
-    }
-
-    if (isTypedArray(value)) {
-      try {
-        return Array.from(value);
-      } catch (_) {
-        return null;
-      }
-    }
-
-    return null;
-  }
-
-
-  /*
-   * Detecta el patrón que DuckDB-Wasm puede devolver
-   * para una única celda:
-   *
-   * [valor, 0, 0, 0]
-   *
-   * El cuarto elemento puede representar metadatos,
-   * padding o información interna del vector.
+   * Determina si una columna representa una fecha.
    *
    * IMPORTANTE:
+   * Esto solamente se utiliza para resultados.
    *
-   * No asumimos que todos los arrays de 4 elementos
-   * son escalares.
-   *
-   * Solo se convierte cuando:
-   *
-   *   - length === 4
-   *   - primer valor es numérico
-   *   - los restantes son cero
-   *
-   * También se acepta BigInt.
+   * No se utiliza para decidir si Local,
+   * Transshipment o cualquier otra columna
+   * numérica es fecha.
    */
-  function normalizeFourElementScalar(value) {
+  function isDateResultKey(key) {
+    const normalized =
+      normalizeHeaderName(key);
 
-    const array =
-      tryConvertToArray(value);
-
-    if (!array) {
-      return {
-        matched: false,
-        value: null
-      };
-    }
-
-    if (array.length !== 4) {
-      return {
-        matched: false,
-        value: null
-      };
-    }
-
-    const first =
-      array[0];
-
-    const rest =
-      array.slice(1);
-
-    const firstIsNumeric =
-      typeof first === "number" ||
-      typeof first === "bigint" ||
-      (
-        typeof first === "string" &&
-        first.trim() !== "" &&
-        Number.isFinite(
-          Number(first)
-        )
-      );
-
-    if (!firstIsNumeric) {
-      return {
-        matched: false,
-        value: null
-      };
-    }
-
-    const restAreZero =
-      rest.every(
-        (v) => {
-
-          if (
-            typeof v === "bigint"
-          ) {
-            return v === 0n;
-          }
-
-          if (
-            typeof v === "number"
-          ) {
-            return v === 0;
-          }
-
-          if (
-            typeof v === "string"
-          ) {
-            return (
-              v.trim() === "0"
-            );
-          }
-
-          return false;
-        }
-      );
-
-    if (!restAreZero) {
-      return {
-        matched: false,
-        value: null
-      };
-    }
-
-    return {
-      matched: true,
-      value: first
-    };
+    return [
+      "fecha",
+      "date",
+      "fechacombinada",
+      "fechaevento"
+    ].includes(normalized);
   }
 
-
   /*
-   * Convierte objetos que puedan comportarse
-   * como vectores Arrow.
+   * Convierte un valor DATE devuelto por
+   * DuckDB-Wasm a YYYY-MM-DD.
+   *
+   * DuckDB-Wasm puede representar DATE como:
+   *
+   * 1735689600000
+   *
+   * que corresponde a:
+   *
+   * 2025-01-01
+   *
+   * También se contempla representación
+   * como días desde Unix epoch.
    */
-  function tryNormalizeArrowLike(value) {
-
-    if (
-      value === null ||
-      value === undefined
-    ) {
-      return {
-        matched: false,
-        value: null
-      };
-    }
-
-    /*
-     * Algunos objetos Arrow exponen toArray().
-     */
-    if (
-      typeof value.toArray === "function"
-    ) {
-      try {
-
-        const converted =
-          value.toArray();
-
-        const scalar =
-          normalizeFourElementScalar(
-            converted
-          );
-
-        if (scalar.matched) {
-          return scalar;
-        }
-
-        /*
-         * Si toArray devuelve un único
-         * elemento, podemos utilizarlo.
-         */
-        if (
-          Array.isArray(converted) &&
-          converted.length === 1
-        ) {
-          return {
-            matched: true,
-            value: converted[0]
-          };
-        }
-
-      } catch (_) {
-        // Continuar.
-      }
-    }
-
-    /*
-     * Algunos wrappers pueden exponer
-     * length + acceso numérico.
-     */
-    if (
-      typeof value.length === "number" &&
-      value.length === 4
-    ) {
-
-      try {
-
-        const array = [];
-
-        for (
-          let i = 0;
-          i < value.length;
-          i++
-        ) {
-          array.push(
-            value[i]
-          );
-        }
-
-        const scalar =
-          normalizeFourElementScalar(
-            array
-          );
-
-        if (scalar.matched) {
-          return scalar;
-        }
-
-      } catch (_) {
-        // Continuar.
-      }
-    }
-
-    return {
-      matched: false,
-      value: null
-    };
-  }
-
-
-  /*
-   * Normaliza cualquier valor proveniente
-   * de DuckDB-Wasm.
-   */
-  function normalizeValue(
-    value,
-    key = ""
+  function normalizeDateResult(
+    value
   ) {
-
     if (
       value === null ||
       value === undefined
@@ -393,14 +150,228 @@
       return null;
     }
 
+    if (
+      value instanceof Date
+    ) {
+      if (
+        Number.isNaN(
+          value.getTime()
+        )
+      ) {
+        return null;
+      }
+
+      return value
+        .toISOString()
+        .slice(0, 10);
+    }
+
+    if (
+      typeof value === "number" ||
+      typeof value === "bigint"
+    ) {
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) {
+        return null;
+      }
+
+      let date;
+
+      /*
+       * Timestamp Unix en milisegundos.
+       *
+       * Ejemplo:
+       * 1735689600000
+       */
+      if (
+        Math.abs(n) > 100000000000
+      ) {
+        date = new Date(n);
+      }
+
+      /*
+       * Días desde Unix epoch.
+       *
+       * Ejemplo:
+       * 20089
+       */
+      else if (
+        Math.abs(n) < 1000000
+      ) {
+        date = new Date(
+          n * 86400000
+        );
+      }
+
+      else {
+        return null;
+      }
+
+      if (
+        Number.isNaN(
+          date.getTime()
+        )
+      ) {
+        return null;
+      }
+
+      return date
+        .toISOString()
+        .slice(0, 10);
+    }
+
+    if (
+      typeof value === "string"
+    ) {
+      const text =
+        value.trim();
+
+      if (!text) {
+        return null;
+      }
+
+      /*
+       * Ya viene en formato DATE.
+       */
+      if (
+        /^\d{4}-\d{2}-\d{2}$/.test(
+          text
+        )
+      ) {
+        return text;
+      }
+
+      /*
+       * Timestamp numérico como texto.
+       */
+      if (
+        /^\d{10,13}$/.test(
+          text
+        )
+      ) {
+        const n =
+          Number(text);
+
+        return normalizeDateResult(
+          n
+        );
+      }
+
+      const date =
+        new Date(text);
+
+      if (
+        Number.isNaN(
+          date.getTime()
+        )
+      ) {
+        return value;
+      }
+
+      return date
+        .toISOString()
+        .slice(0, 10);
+    }
+
+    return value;
+  }
+
+  function normalizeNumericArray(
+    value
+  ) {
+    if (
+      !Array.isArray(value) ||
+      value.length !== 4
+    ) {
+      return null;
+    }
+
+    const nums =
+      value.map((v) => {
+        if (
+          typeof v === "bigint"
+        ) {
+          return Number(v);
+        }
+
+        if (
+          typeof v === "number"
+        ) {
+          return v;
+        }
+
+        return Number(v);
+      });
+
+    if (
+      !nums.every(
+        Number.isFinite
+      )
+    ) {
+      return null;
+    }
+
+    if (
+      nums[1] === 0 &&
+      nums[2] === 0 &&
+      nums[3] === 0
+    ) {
+      return nums[0];
+    }
+
+    return null;
+  }
+
+  /*
+   * Normalización principal de resultados.
+   */
+  function normalizeValue(
+    value,
+    key = ""
+  ) {
+    if (
+      value === null ||
+      value === undefined
+    ) {
+      return null;
+    }
 
     /*
-     * BigInt
+     * NUEVO v0.4.16
+     *
+     * Si el nombre de la columna indica DATE,
+     * convertir timestamp a YYYY-MM-DD.
+     *
+     * Esto ocurre ANTES de procesar números.
+     *
+     * Por lo tanto:
+     *
+     * Fecha -> fecha
+     *
+     * Año -> número
+     * Local -> número
+     * Transshipment -> número
+     * Total TEUs -> número
      */
+    if (
+      isDateResultKey(key)
+    ) {
+      const dateValue =
+        normalizeDateResult(
+          value
+        );
+
+      if (
+        dateValue !== null
+      ) {
+        return dateValue;
+      }
+    }
+
     if (
       typeof value === "bigint"
     ) {
-
       const n =
         Number(value);
 
@@ -409,14 +380,9 @@
         : value.toString();
     }
 
-
-    /*
-     * Date
-     */
     if (
       value instanceof Date
     ) {
-
       return Number.isNaN(
         value.getTime()
       )
@@ -424,57 +390,35 @@
         : value.toISOString();
     }
 
-
-    /*
-     * ArrayBuffer
-     */
     if (
       value instanceof ArrayBuffer
     ) {
-
       return Array.from(
         new Uint8Array(value)
       );
     }
 
-
-    /*
-     * TypedArray / DataView
-     */
     if (
       ArrayBuffer.isView(value)
     ) {
-
-      /*
-       * DataView
-       */
-      if (
-        value instanceof DataView
-      ) {
-        return value;
-      }
-
-      const array =
+      const arr =
         Array.from(value);
 
-      /*
-       * PRIMERA PRIORIDAD:
-       * detectar [valor,0,0,0].
-       */
       const scalar =
-        normalizeFourElementScalar(
-          array
+        normalizeNumericArray(
+          arr
         );
 
-      if (scalar.matched) {
-
-        return normalizeValue(
-          scalar.value,
+      if (
+        scalar !== null &&
+        /sum|avg|min|max|count|total|registros/i.test(
           key
-        );
+        )
+      ) {
+        return scalar;
       }
 
-      return array.map(
+      return arr.map(
         (v) =>
           normalizeValue(
             v,
@@ -483,29 +427,21 @@
       );
     }
 
-
-    /*
-     * Array normal
-     */
     if (
       Array.isArray(value)
     ) {
-
-      /*
-       * PRIMERA PRIORIDAD:
-       * detectar [valor,0,0,0].
-       */
       const scalar =
-        normalizeFourElementScalar(
+        normalizeNumericArray(
           value
         );
 
-      if (scalar.matched) {
-
-        return normalizeValue(
-          scalar.value,
+      if (
+        scalar !== null &&
+        /sum|avg|min|max|count|total|registros/i.test(
           key
-        );
+        )
+      ) {
+        return scalar;
       }
 
       return value.map(
@@ -517,34 +453,15 @@
       );
     }
 
-
-    /*
-     * Objetos Arrow-like.
-     */
     if (
       typeof value === "object"
     ) {
-
-      const arrow =
-        tryNormalizeArrowLike(
-          value
-        );
-
-      if (arrow.matched) {
-
-        return normalizeValue(
-          arrow.value,
-          key
-        );
-      }
-
       const output = {};
 
       for (
         const [k, v]
         of Object.entries(value)
       ) {
-
         output[k] =
           normalizeValue(
             v,
@@ -555,13 +472,12 @@
       return output;
     }
 
-
     return value;
   }
 
-
-  function normalizeRows(rows) {
-
+  function normalizeRows(
+    rows
+  ) {
     if (
       !Array.isArray(rows)
     ) {
@@ -574,22 +490,20 @@
     );
   }
 
-
   function jsonSafe(value) {
-
     return JSON.parse(
       JSON.stringify(
         value,
         (_, v) => {
-
           if (
             typeof v === "bigint"
           ) {
-
             const n =
               Number(v);
 
-            return Number.isSafeInteger(n)
+            return Number.isSafeInteger(
+              n
+            )
               ? n
               : v.toString();
           }
@@ -600,12 +514,12 @@
     );
   }
 
-
   function setResult(value) {
-
     const safe =
       jsonSafe(
-        normalizeValue(value)
+        normalizeValue(
+          value
+        )
       );
 
     const output =
@@ -625,9 +539,7 @@
       );
   }
 
-
   function showError(error) {
-
     const message =
       error &&
       error.message
@@ -641,18 +553,16 @@
         : "";
 
     setResult({
-      mensaje: message,
-      stack: stack
+      mensaje:
+        message,
+      stack:
+        stack
     });
   }
 
-
-  /* =========================================================
-   * SQL
-   * ========================================================= */
-
-  function escapeSqlIdentifier(name) {
-
+  function escapeSqlIdentifier(
+    name
+  ) {
     return (
       '"' +
       safeString(name)
@@ -664,23 +574,20 @@
     );
   }
 
-
-  function escapeSqlString(value) {
-
-    return safeString(value)
-      .replace(
-        /'/g,
-        "''"
-      );
+  function escapeSqlString(
+    value
+  ) {
+    return safeString(
+      value
+    ).replace(
+      /'/g,
+      "''"
+    );
   }
 
-
-  /* =========================================================
-   * ENCABEZADOS
-   * ========================================================= */
-
-  function makeUniqueHeaders(headers) {
-
+  function makeUniqueHeaders(
+    headers
+  ) {
     const result = [];
     const used = new Map();
 
@@ -689,10 +596,10 @@
         header,
         index
       ) => {
-
         let name =
-          safeString(header)
-            .trim();
+          safeString(
+            header
+          ).trim();
 
         if (!name) {
           name =
@@ -703,15 +610,18 @@
           name.toLowerCase();
 
         if (
-          !used.has(normalized)
+          !used.has(
+            normalized
+          )
         ) {
-
           used.set(
             normalized,
             1
           );
 
-          result.push(name);
+          result.push(
+            name
+          );
 
           return;
         }
@@ -735,12 +645,10 @@
     return result;
   }
 
-
   function detectColumn(
     headers,
     candidates
   ) {
-
     if (
       !Array.isArray(headers)
     ) {
@@ -750,14 +658,15 @@
     const normalizedHeaders =
       headers.map(
         (h) =>
-          normalizeHeaderName(h)
+          normalizeHeaderName(
+            h
+          )
       );
 
     for (
       const candidate
       of candidates
     ) {
-
       const target =
         normalizeHeaderName(
           candidate
@@ -768,7 +677,9 @@
           target
         );
 
-      if (index >= 0) {
+      if (
+        index >= 0
+      ) {
         return headers[index];
       }
     }
@@ -776,9 +687,7 @@
     return null;
   }
 
-
   function detectSpecialColumns() {
-
     const yearColumn =
       detectColumn(
         currentHeaders,
@@ -838,25 +747,33 @@
       );
 
     return {
-      año: yearColumn,
-      fecha: dateColumn,
-      mes: monthColumn,
-      total_teus: totalColumn,
-      local: localColumn,
+      año:
+        yearColumn,
+
+      fecha:
+        dateColumn,
+
+      mes:
+        monthColumn,
+
+      total_teus:
+        totalColumn,
+
+      local:
+        localColumn,
+
       transshipment:
         transshipmentColumn
     };
   }
 
-
-  /* =========================================================
-   * INFERENCIA DE TIPOS
-   * ========================================================= */
-
-  function isDateHeader(name) {
-
+  function isDateHeader(
+    name
+  ) {
     const normalized =
-      normalizeHeaderName(name);
+      normalizeHeaderName(
+        name
+      );
 
     return [
       "fecha",
@@ -868,9 +785,9 @@
     );
   }
 
-
-  function looksLikeDateString(value) {
-
+  function looksLikeDateString(
+    value
+  ) {
     if (
       value instanceof Date
     ) {
@@ -885,30 +802,34 @@
     }
 
     const text =
-      safeString(value)
-        .trim();
+      safeString(
+        value
+      ).trim();
 
     if (!text) {
       return false;
     }
 
     if (
-      /^\d{4}-\d{1,2}-\d{1,2}$/
-        .test(text)
+      /^\d{4}-\d{1,2}-\d{1,2}$/.test(
+        text
+      )
     ) {
       return true;
     }
 
     if (
-      /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/
-        .test(text)
+      /^\d{1,2}[\/-]\d{1,2}[\/-]\d{4}$/.test(
+        text
+      )
     ) {
       return true;
     }
 
     if (
-      /^[A-Za-zÁÉÍÓÚáéíóú]+[\/-]\d{4}$/
-        .test(text)
+      /^[A-Za-zÁÉÍÓÚáéíóú]+[\/-]\d{4}$/.test(
+        text
+      )
     ) {
       return true;
     }
@@ -916,9 +837,9 @@
     return false;
   }
 
-
-  function looksLikeInteger(value) {
-
+  function looksLikeInteger(
+    value
+  ) {
     if (
       typeof value === "bigint"
     ) {
@@ -928,38 +849,45 @@
     if (
       typeof value === "number"
     ) {
-      return Number.isInteger(value);
+      return Number.isInteger(
+        value
+      );
     }
 
     const text =
-      safeString(value)
-        .trim();
+      safeString(
+        value
+      ).trim();
 
     if (!text) {
       return false;
     }
 
-    return /^-?\d+$/
-      .test(
-        text.replace(
-          /,/g,
-          ""
-        )
-      );
+    return /^-?\d+$/.test(
+      text.replace(
+        /,/g,
+        ""
+      )
+    );
   }
 
-
-  function looksLikeDouble(value) {
-
+  function looksLikeDouble(
+    value
+  ) {
     if (
       typeof value === "number"
     ) {
-      return Number.isFinite(value);
+      return Number.isFinite(
+        value
+      );
     }
 
     const text =
       safeString(value)
-        .replace(/,/g, "")
+        .replace(
+          /,/g,
+          ""
+        )
         .trim();
 
     if (!text) {
@@ -971,18 +899,18 @@
     );
   }
 
-
   function inferColumnType(
     columnIndex,
     columnName,
     rows
   ) {
-
     const values =
       rows
         .map(
           (row) =>
-            row[columnIndex]
+            row[
+              columnIndex
+            ]
         )
         .filter(
           (v) =>
@@ -992,59 +920,67 @@
     const nonEmptyValues =
       values.length;
 
-
     if (
-      isDateHeader(columnName)
+      isDateHeader(
+        columnName
+      )
     ) {
-
       return {
         column_index:
           columnIndex,
+
         column_name:
           columnName,
+
         duckdb_type:
           "DATE",
+
         sqlType:
           "DATE",
+
         confidence:
           "high",
+
         reason:
           "encabezado identificado como fecha",
+
         non_empty_values:
           nonEmptyValues
       };
     }
-
 
     const normalizedName =
       normalizeHeaderName(
         columnName
       );
 
-
     if (
       normalizedName === "ano" ||
       normalizedName === "year"
     ) {
-
       return {
         column_index:
           columnIndex,
+
         column_name:
           columnName,
+
         duckdb_type:
           "BIGINT",
+
         sqlType:
           "BIGINT",
+
         confidence:
           "high",
+
         reason:
           "columna identificada como año",
+
         non_empty_values:
           nonEmptyValues
       };
     }
-
 
     if (
       [
@@ -1058,28 +994,34 @@
         normalizedName
       )
     ) {
-
       const allIntegers =
         values.length > 0 &&
         values.every(
           looksLikeInteger
         );
 
-      if (allIntegers) {
-
+      if (
+        allIntegers
+      ) {
         return {
           column_index:
             columnIndex,
+
           column_name:
             columnName,
+
           duckdb_type:
             "BIGINT",
+
           sqlType:
             "BIGINT",
+
           confidence:
             "high",
+
           reason:
             "columna numérica identificada por encabezado",
+
           non_empty_values:
             nonEmptyValues
         };
@@ -1091,27 +1033,33 @@
           looksLikeDouble
         );
 
-      if (allNumeric) {
-
+      if (
+        allNumeric
+      ) {
         return {
           column_index:
             columnIndex,
+
           column_name:
             columnName,
+
           duckdb_type:
             "DOUBLE",
+
           sqlType:
             "DOUBLE",
+
           confidence:
             "high",
+
           reason:
             "columna numérica identificada por encabezado",
+
           non_empty_values:
             nonEmptyValues
         };
       }
     }
-
 
     if (
       values.length > 0 &&
@@ -1119,25 +1067,29 @@
         looksLikeDateString
       )
     ) {
-
       return {
         column_index:
           columnIndex,
+
         column_name:
           columnName,
+
         duckdb_type:
           "DATE",
+
         sqlType:
           "DATE",
+
         confidence:
           "medium",
+
         reason:
           "todos los valores son compatibles con fecha",
+
         non_empty_values:
           nonEmptyValues
       };
     }
-
 
     if (
       values.length > 0 &&
@@ -1145,25 +1097,29 @@
         looksLikeInteger
       )
     ) {
-
       return {
         column_index:
           columnIndex,
+
         column_name:
           columnName,
+
         duckdb_type:
           "BIGINT",
+
         sqlType:
           "BIGINT",
+
         confidence:
           "high",
+
         reason:
           "todos los valores son enteros",
+
         non_empty_values:
           nonEmptyValues
       };
     }
-
 
     if (
       values.length > 0 &&
@@ -1171,53 +1127,57 @@
         looksLikeDouble
       )
     ) {
-
       return {
         column_index:
           columnIndex,
+
         column_name:
           columnName,
+
         duckdb_type:
           "DOUBLE",
+
         sqlType:
           "DOUBLE",
+
         confidence:
           "medium",
+
         reason:
           "todos los valores son numéricos",
+
         non_empty_values:
           nonEmptyValues
       };
     }
 
-
     return {
       column_index:
         columnIndex,
+
       column_name:
         columnName,
+
       duckdb_type:
         "VARCHAR",
+
       sqlType:
         "VARCHAR",
+
       confidence:
         "medium",
+
       reason:
         "valores tratados como texto",
+
       non_empty_values:
         nonEmptyValues
     };
   }
 
-
-  /* =========================================================
-   * FECHAS
-   * ========================================================= */
-
   function excelSerialToDate(
     serial
   ) {
-
     const n =
       Number(serial);
 
@@ -1245,11 +1205,9 @@
     );
   }
 
-
   function normalizeExcelDate(
     value
   ) {
-
     if (
       value instanceof Date
     ) {
@@ -1261,25 +1219,25 @@
       value > 20000 &&
       value < 80000
     ) {
-
       return excelSerialToDate(
         value
       );
     }
 
     const text =
-      safeString(value)
-        .trim();
+      safeString(
+        value
+      ).trim();
 
     if (!text) {
       return null;
     }
 
     if (
-      /^\d{4}-\d{1,2}-\d{1,2}$/
-        .test(text)
+      /^\d{4}-\d{1,2}-\d{1,2}$/.test(
+        text
+      )
     ) {
-
       const d =
         new Date(
           `${text}T00:00:00Z`
@@ -1302,9 +1260,9 @@
       : d;
   }
 
-
-  function dateToSql(date) {
-
+  function dateToSql(
+    date
+  ) {
     if (
       !(date instanceof Date)
     ) {
@@ -1333,16 +1291,10 @@
     return `${y}-${m}-${d}`;
   }
 
-
-  /* =========================================================
-   * CONVERSIÓN SQL
-   * ========================================================= */
-
   function valueToSql(
     value,
     type
   ) {
-
     if (
       isEmptyValue(value)
     ) {
@@ -1352,7 +1304,6 @@
     if (
       type === "DATE"
     ) {
-
       const date =
         normalizeExcelDate(
           value
@@ -1367,13 +1318,13 @@
       )}'`;
     }
 
-
     if (
       type === "BIGINT"
     ) {
-
       const text =
-        safeString(value)
+        safeString(
+          value
+        )
           .replace(
             /,/g,
             ""
@@ -1394,13 +1345,13 @@
       );
     }
 
-
     if (
       type === "DOUBLE"
     ) {
-
       const text =
-        safeString(value)
+        safeString(
+          value
+        )
           .replace(
             /,/g,
             ""
@@ -1419,28 +1370,25 @@
       return String(n);
     }
 
-
     return `'${escapeSqlString(
       value
     )}'`;
   }
 
-
   function buildCreateTableSql(
     headers,
     inferredTypes
   ) {
-
     const columns =
       headers.map(
         (
           header,
           index
         ) => {
-
           const type =
-            inferredTypes[index]
-              ?.sqlType ||
+            inferredTypes[
+              index
+            ]?.sqlType ||
             "VARCHAR";
 
           return (
@@ -1462,27 +1410,25 @@
     `;
   }
 
-
   function buildInsertSql(
     headers,
     rows,
     inferredTypes
   ) {
-
     const columnSql =
       headers
         .map(
           escapeSqlIdentifier
         )
-        .join(", ");
+        .join(
+          ", "
+        );
 
     const statements = [];
 
     for (
-      const row
-      of rows
+      const row of rows
     ) {
-
       const values =
         headers.map(
           (
@@ -1491,8 +1437,9 @@
           ) =>
             valueToSql(
               row[index],
-              inferredTypes[index]
-                ?.sqlType ||
+              inferredTypes[
+                index
+              ]?.sqlType ||
               "VARCHAR"
             )
         );
@@ -1514,15 +1461,8 @@
     `;
   }
 
-
-  /* =========================================================
-   * DUCKDB
-   * ========================================================= */
-
   async function loadLibraries() {
-
     if (!duckdb) {
-
       duckdb =
         await import(
           DUCKDB_PACKAGE
@@ -1530,7 +1470,6 @@
     }
 
     if (!XLSX) {
-
       XLSX =
         await import(
           XLSX_PACKAGE
@@ -1538,9 +1477,7 @@
     }
   }
 
-
   async function createDuckDB() {
-
     if (
       db &&
       conn
@@ -1590,27 +1527,23 @@
       await db.connect();
   }
 
-
   async function resetDatabase() {
-
     if (!conn) {
       return;
     }
 
     try {
-
       await conn.query(
         "DROP TABLE IF EXISTS excel_data;"
       );
-
     } catch (_) {
       // Ignorar.
     }
   }
 
-
-  async function queryRows(sql) {
-
+  async function queryRows(
+    sql
+  ) {
     const result =
       await conn.query(
         sql
@@ -1619,29 +1552,19 @@
     const rows =
       result.toArray();
 
-    /*
-     * v0.4.16:
-     *
-     * La normalización se realiza
-     * inmediatamente después de convertir
-     * el resultado Arrow a array.
-     */
     return normalizeRows(
       rows
     );
   }
 
-
   async function getDuckDBVersion() {
-
     try {
-
       return await queryRows(
         "SELECT * FROM pragma_version();"
       );
-
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       return [
         {
           duckdb_version_error:
@@ -1651,9 +1574,7 @@
     }
   }
 
-
   async function getSchema() {
-
     return queryRows(`
       SELECT
         column_name,
@@ -1667,15 +1588,9 @@
     `);
   }
 
-
-  /* =========================================================
-   * EXCEL
-   * ========================================================= */
-
   function readWorksheet(
     worksheet
   ) {
-
     const matrix =
       XLSX.utils.sheet_to_json(
         worksheet,
@@ -1690,7 +1605,6 @@
     if (
       !matrix.length
     ) {
-
       return {
         headers: [],
         rows: [],
@@ -1714,7 +1628,6 @@
     const normalizedRows =
       data.map(
         (row) => {
-
           const result = [];
 
           for (
@@ -1722,9 +1635,9 @@
             i < headers.length;
             i++
           ) {
-
             result.push(
-              row?.[i] ?? null
+              row?.[i] ??
+              null
             );
           }
 
@@ -1737,7 +1650,9 @@
         (row) =>
           row.some(
             (value) =>
-              !isEmptyValue(value)
+              !isEmptyValue(
+                value
+              )
           )
       );
 
@@ -1757,17 +1672,12 @@
     };
   }
 
-
   async function loadExcel(
     file
   ) {
-
     try {
-
       await loadLibraries();
-
       await createDuckDB();
-
       await resetDatabase();
 
       currentFile =
@@ -1780,9 +1690,14 @@
         XLSX.read(
           buffer,
           {
-            type: "array",
-            cellDates: true,
-            raw: true
+            type:
+              "array",
+
+            cellDates:
+              true,
+
+            raw:
+              true
           }
         );
 
@@ -1796,7 +1711,6 @@
       if (
         !sheetNames.length
       ) {
-
         throw new Error(
           "El archivo Excel no contiene hojas."
         );
@@ -1824,7 +1738,6 @@
       if (
         !currentHeaders.length
       ) {
-
         throw new Error(
           "No se encontraron encabezados."
         );
@@ -1833,7 +1746,6 @@
       if (
         !currentRows.length
       ) {
-
         throw new Error(
           "No se encontraron filas con datos."
         );
@@ -1897,7 +1809,6 @@
         detectSpecialColumns();
 
       const result = {
-
         procesamiento:
           "LOCAL",
 
@@ -1959,7 +1870,6 @@
           preview,
 
         bundle: {
-
           mainModule:
             "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-eh.wasm",
 
@@ -1979,8 +1889,9 @@
         `Excel cargado localmente: ${file.name} — ${currentRows.length} registros`
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -1991,20 +1902,12 @@
     }
   }
 
-
-  /* =========================================================
-   * EJECUCIÓN SQL
-   * ========================================================= */
-
   async function executeSql(
     sql,
     label = "SQL"
   ) {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2014,7 +1917,6 @@
         !sql ||
         !sql.trim()
       ) {
-
         throw new Error(
           "Introduce una consulta SQL."
         );
@@ -2033,7 +1935,6 @@
         start;
 
       setResult({
-
         procesamiento:
           "LOCAL",
 
@@ -2060,8 +1961,9 @@
 
       return rows;
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2074,13 +1976,7 @@
     }
   }
 
-
-  /* =========================================================
-   * CONSULTAS PREDEFINIDAS
-   * ========================================================= */
-
   async function countRows() {
-
     return executeSql(
       `
       SELECT
@@ -2091,9 +1987,7 @@
     );
   }
 
-
   async function previewRows() {
-
     return executeSql(
       `
       SELECT *
@@ -2104,13 +1998,9 @@
     );
   }
 
-
   async function summary() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2122,18 +2012,16 @@
       const numericColumns =
         schema.filter(
           (column) =>
-            /BIGINT|DOUBLE|DECIMAL|INTEGER|HUGEINT|FLOAT/i
-              .test(
-                safeString(
-                  column.data_type
-                )
+            /BIGINT|DOUBLE|DECIMAL|INTEGER|HUGEINT|FLOAT/i.test(
+              safeString(
+                column.data_type
               )
+            )
         );
 
       if (
         !numericColumns.length
       ) {
-
         throw new Error(
           "No se encontraron columnas numéricas."
         );
@@ -2146,7 +2034,6 @@
         const column
         of numericColumns
       ) {
-
         const name =
           column.column_name;
 
@@ -2193,8 +2080,9 @@
         "Resumen"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2205,13 +2093,9 @@
     }
   }
 
-
   async function totalByYear() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2220,8 +2104,9 @@
       const special =
         detectSpecialColumns();
 
-      if (!special.año) {
-
+      if (
+        !special.año
+      ) {
         throw new Error(
           `No se encontró la columna de año. Columnas disponibles: ${currentHeaders.join(
             ", "
@@ -2229,8 +2114,9 @@
         );
       }
 
-      if (!special.total_teus) {
-
+      if (
+        !special.total_teus
+      ) {
         throw new Error(
           `No se encontró la columna de Total TEUs. Columnas disponibles: ${currentHeaders.join(
             ", "
@@ -2262,8 +2148,9 @@
         "Total por año"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2274,13 +2161,9 @@
     }
   }
 
-
   async function totalByMonth() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2289,22 +2172,25 @@
       const special =
         detectSpecialColumns();
 
-      if (!special.año) {
-
+      if (
+        !special.año
+      ) {
         throw new Error(
           "No se encontró la columna Año."
         );
       }
 
-      if (!special.mes) {
-
+      if (
+        !special.mes
+      ) {
         throw new Error(
           "No se encontró la columna Mes."
         );
       }
 
-      if (!special.total_teus) {
-
+      if (
+        !special.total_teus
+      ) {
         throw new Error(
           "No se encontró la columna Total TEUs."
         );
@@ -2344,8 +2230,9 @@
         "Total por mes"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2356,13 +2243,9 @@
     }
   }
 
-
   async function totalByLocal() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2371,15 +2254,17 @@
       const special =
         detectSpecialColumns();
 
-      if (!special.local) {
-
+      if (
+        !special.local
+      ) {
         throw new Error(
           "No se encontró la columna Local."
         );
       }
 
-      if (!special.total_teus) {
-
+      if (
+        !special.total_teus
+      ) {
         throw new Error(
           "No se encontró la columna Total TEUs."
         );
@@ -2409,8 +2294,9 @@
         "Total por Local"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2421,13 +2307,9 @@
     }
   }
 
-
   async function totalTransshipmentByYear() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2436,22 +2318,25 @@
       const special =
         detectSpecialColumns();
 
-      if (!special.año) {
-
+      if (
+        !special.año
+      ) {
         throw new Error(
           "No se encontró la columna Año."
         );
       }
 
-      if (!special.transshipment) {
-
+      if (
+        !special.transshipment
+      ) {
         throw new Error(
           "No se encontró la columna Transshipment."
         );
       }
 
-      if (!special.total_teus) {
-
+      if (
+        !special.total_teus
+      ) {
         throw new Error(
           "No se encontró la columna Total TEUs."
         );
@@ -2487,8 +2372,9 @@
         "Transshipment por año"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -2499,216 +2385,9 @@
     }
   }
 
-
-  /* =========================================================
-   * VERIFICACIÓN LOCAL + TRANSSHIPMENT
-   * ========================================================= */
-
-  async function localVsTransshipmentByYear() {
-
-    try {
-
-      if (!conn) {
-
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
-
-      const special =
-        detectSpecialColumns();
-
-      if (!special.año) {
-
-        throw new Error(
-          "No se encontró la columna Año."
-        );
-      }
-
-      if (!special.local) {
-
-        throw new Error(
-          "No se encontró la columna Local."
-        );
-      }
-
-      if (!special.transshipment) {
-
-        throw new Error(
-          "No se encontró la columna Transshipment."
-        );
-      }
-
-      if (!special.total_teus) {
-
-        throw new Error(
-          "No se encontró la columna Total TEUs."
-        );
-      }
-
-      const yearSql =
-        escapeSqlIdentifier(
-          special.año
-        );
-
-      const localSql =
-        escapeSqlIdentifier(
-          special.local
-        );
-
-      const transSql =
-        escapeSqlIdentifier(
-          special.transshipment
-        );
-
-      const totalSql =
-        escapeSqlIdentifier(
-          special.total_teus
-        );
-
-      const sql = `
-        SELECT
-          ${yearSql} AS año,
-          SUM(${localSql}) AS total_local,
-          SUM(${transSql}) AS total_transshipment,
-          SUM(${totalSql}) AS total_teus
-        FROM excel_data
-        GROUP BY ${yearSql}
-        ORDER BY ${yearSql};
-      `;
-
-      return executeSql(
-        sql,
-        "Local vs Transshipment por año"
-      );
-
-    } catch (error) {
-
-      showError(
-        error
-      );
-
-      updateStatus(
-        "Error en Local vs Transshipment"
-      );
-    }
-  }
-
-
-  /* =========================================================
-   * VERIFICAR TOTAL = LOCAL + TRANSSHIPMENT
-   * ========================================================= */
-
-  async function verifyTotalComposition() {
-
-    try {
-
-      if (!conn) {
-
-        throw new Error(
-          "Primero debes cargar un archivo Excel."
-        );
-      }
-
-      const special =
-        detectSpecialColumns();
-
-      if (!special.año) {
-
-        throw new Error(
-          "No se encontró la columna Año."
-        );
-      }
-
-      if (!special.local) {
-
-        throw new Error(
-          "No se encontró la columna Local."
-        );
-      }
-
-      if (!special.transshipment) {
-
-        throw new Error(
-          "No se encontró la columna Transshipment."
-        );
-      }
-
-      if (!special.total_teus) {
-
-        throw new Error(
-          "No se encontró la columna Total TEUs."
-        );
-      }
-
-      const yearSql =
-        escapeSqlIdentifier(
-          special.año
-        );
-
-      const localSql =
-        escapeSqlIdentifier(
-          special.local
-        );
-
-      const transSql =
-        escapeSqlIdentifier(
-          special.transshipment
-        );
-
-      const totalSql =
-        escapeSqlIdentifier(
-          special.total_teus
-        );
-
-      const sql = `
-        SELECT
-          ${yearSql} AS año,
-          SUM(${localSql}) AS local,
-          SUM(${transSql}) AS transshipment,
-          SUM(${totalSql}) AS total_teus,
-          SUM(${localSql})
-            + SUM(${transSql})
-            AS calculado,
-          SUM(${totalSql})
-            - (
-              SUM(${localSql})
-              + SUM(${transSql})
-            )
-            AS diferencia
-        FROM excel_data
-        GROUP BY ${yearSql}
-        ORDER BY ${yearSql};
-      `;
-
-      return executeSql(
-        sql,
-        "Verificación Total TEUs"
-      );
-
-    } catch (error) {
-
-      showError(
-        error
-      );
-
-      updateStatus(
-        "Error en verificación"
-      );
-    }
-  }
-
-
-  /* =========================================================
-   * ESQUEMA
-   * ========================================================= */
-
   async function showSchema() {
-
     try {
-
       if (!conn) {
-
         throw new Error(
           "Primero debes cargar un archivo Excel."
         );
@@ -2718,7 +2397,6 @@
         await getSchema();
 
       setResult({
-
         procesamiento:
           "LOCAL",
 
@@ -2739,28 +2417,22 @@
         "Esquema mostrado"
       );
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
     }
   }
 
-
-  /* =========================================================
-   * SQL DESDE EDITOR
-   * ========================================================= */
-
   async function runSqlFromEditor() {
-
     const editor =
       document.getElementById(
         "tm-excel-sql"
       );
 
     if (!editor) {
-
       showError(
         new Error(
           "No se encontró el editor SQL."
@@ -2779,30 +2451,21 @@
     );
   }
 
-
   function updateStatus(
     message
   ) {
-
     const status =
       document.getElementById(
         "tm-excel-status"
       );
 
     if (status) {
-
       status.textContent =
         message;
     }
   }
 
-
-  /* =========================================================
-   * UI
-   * ========================================================= */
-
   function createUI() {
-
     const old =
       document.getElementById(
         "tm-excel-engine-panel"
@@ -2821,7 +2484,6 @@
       "tm-excel-engine-panel";
 
     panel.innerHTML = `
-
       <div
         style="
           font-family:Arial,sans-serif;
@@ -2933,20 +2595,6 @@
           </button>
 
           <button
-            id="tm-excel-local-trans"
-            type="button"
-          >
-            Local vs Transshipment
-          </button>
-
-          <button
-            id="tm-excel-verify"
-            type="button"
-          >
-            Verificar Total
-          </button>
-
-          <button
             id="tm-excel-schema"
             type="button"
           >
@@ -2980,14 +2628,8 @@
           "
         >SELECT
     "Año",
-    SUM("Local") AS total_local,
     SUM("Transshipment") AS total_transshipment,
-    SUM("Total TEUs") AS total_teus,
-    SUM("Total TEUs")
-      - (
-        SUM("Local")
-        + SUM("Transshipment")
-      ) AS diferencia
+    SUM("Total TEUs") AS total_teus
 FROM excel_data
 GROUP BY "Año"
 ORDER BY "Año";</textarea>
@@ -3032,7 +2674,6 @@ ORDER BY "Año";</textarea>
       </div>
     `;
 
-
     const possibleHosts = [
       "#right-sidebar",
       "[data-testid='right-sidebar']",
@@ -3040,15 +2681,12 @@ ORDER BY "Año";</textarea>
       "aside"
     ];
 
-
     let host = null;
-
 
     for (
       const selector
       of possibleHosts
     ) {
-
       host =
         document.querySelector(
           selector
@@ -3059,15 +2697,11 @@ ORDER BY "Año";</textarea>
       }
     }
 
-
     if (host) {
-
       host.appendChild(
         panel
       );
-
     } else {
-
       panel.style.position =
         "fixed";
 
@@ -3109,17 +2743,18 @@ ORDER BY "Año";</textarea>
       );
     }
 
-
     document
       .getElementById(
         "tm-excel-file"
       )
       .addEventListener(
         "change",
-        async (event) => {
-
+        async (
+          event
+        ) => {
           const file =
-            event.target.files?.[0];
+            event.target
+              .files?.[0];
 
           if (!file) {
             return;
@@ -3131,7 +2766,6 @@ ORDER BY "Año";</textarea>
         }
       );
 
-
     document
       .getElementById(
         "tm-excel-count"
@@ -3140,7 +2774,6 @@ ORDER BY "Año";</textarea>
         "click",
         countRows
       );
-
 
     document
       .getElementById(
@@ -3151,7 +2784,6 @@ ORDER BY "Año";</textarea>
         previewRows
       );
 
-
     document
       .getElementById(
         "tm-excel-summary"
@@ -3160,7 +2792,6 @@ ORDER BY "Año";</textarea>
         "click",
         summary
       );
-
 
     document
       .getElementById(
@@ -3171,7 +2802,6 @@ ORDER BY "Año";</textarea>
         totalByYear
       );
 
-
     document
       .getElementById(
         "tm-excel-month"
@@ -3180,7 +2810,6 @@ ORDER BY "Año";</textarea>
         "click",
         totalByMonth
       );
-
 
     document
       .getElementById(
@@ -3191,7 +2820,6 @@ ORDER BY "Año";</textarea>
         totalByLocal
       );
 
-
     document
       .getElementById(
         "tm-excel-trans"
@@ -3201,27 +2829,6 @@ ORDER BY "Año";</textarea>
         totalTransshipmentByYear
       );
 
-
-    document
-      .getElementById(
-        "tm-excel-local-trans"
-      )
-      .addEventListener(
-        "click",
-        localVsTransshipmentByYear
-      );
-
-
-    document
-      .getElementById(
-        "tm-excel-verify"
-      )
-      .addEventListener(
-        "click",
-        verifyTotalComposition
-      );
-
-
     document
       .getElementById(
         "tm-excel-schema"
@@ -3230,7 +2837,6 @@ ORDER BY "Año";</textarea>
         "click",
         showSchema
       );
-
 
     document
       .getElementById(
@@ -3242,15 +2848,8 @@ ORDER BY "Año";</textarea>
       );
   }
 
-
-  /* =========================================================
-   * INICIALIZACIÓN
-   * ========================================================= */
-
   async function initialize() {
-
     try {
-
       createUI();
 
       updateStatus(
@@ -3258,7 +2857,6 @@ ORDER BY "Año";</textarea>
       );
 
       await loadLibraries();
-
       await createDuckDB();
 
       const version =
@@ -3268,9 +2866,7 @@ ORDER BY "Año";</textarea>
         `${VERSION} listo — DuckDB-Wasm cargado localmente`
       );
 
-
       window.TMExcelEngine = {
-
         version:
           VERSION,
 
@@ -3307,12 +2903,6 @@ ORDER BY "Año";</textarea>
         totalTransshipmentByYear:
           totalTransshipmentByYear,
 
-        localVsTransshipmentByYear:
-          localVsTransshipmentByYear,
-
-        verifyTotalComposition:
-          verifyTotalComposition,
-
         showSchema:
           showSchema,
 
@@ -3323,8 +2913,9 @@ ORDER BY "Año";</textarea>
           getSchema
       };
 
-    } catch (error) {
-
+    } catch (
+      error
+    ) {
       showError(
         error
       );
@@ -3334,7 +2925,6 @@ ORDER BY "Año";</textarea>
       );
     }
   }
-
 
   /*
    * Evita instalar varias veces
