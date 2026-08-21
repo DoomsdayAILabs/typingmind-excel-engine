@@ -2234,7 +2234,7 @@ FROM excel_data;
               item.column_name
             )
               .toLowerCase() ===
-            "total teu's"
+            "total teus"
         );
 
       if (!hasTotal) {
@@ -2250,7 +2250,7 @@ FROM excel_data;
           `
 SELECT
     "Año",
-    SUM("Total TEU's") AS total
+    SUM("Total TEUs") AS total
 FROM excel_data
 GROUP BY "Año"
 ORDER BY "Año";
@@ -2279,7 +2279,7 @@ SELECT
     EXTRACT(
       YEAR FROM "Fecha"
     ) AS año,
-    SUM("Total TEU's") AS total
+    SUM("Total TEUs") AS total
 FROM excel_data
 GROUP BY
     EXTRACT(
