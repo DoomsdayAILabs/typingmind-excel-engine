@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TypingMind Excel Engine — SQL Test Runner</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #172033; }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 18px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.55rem; }
+    .note, .panel { background: #fff; border: 1px solid #d8e0eb; border-radius: 10px; padding: 16px; margin-top: 16px; }
+    .note { color: #43516a; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button { border: 0; border-radius: 7px; padding: 9px 13px; background: #1268d6; color: #fff; cursor: pointer; font-weight: 600; }
+    button:disabled { background: #9caabd; cursor: not-allowed; }
+    #status { margin: 12px 0 0; font-weight: 600; }
+    .pass { color: #08783d; } .fail { color: #b42318; } .pending { color: #5b6678; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; background: #fff; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e4e9f0; vertical-align: top; }
+    th { background: #f8fafc; }
+    .badge { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: .78rem; font-weight: 700; }
+    .badge.pass { background: #dcfce7; } .badge.fail { background: #fee4e2; }
+    details { margin-top: 10px; } summary { cursor: pointer; font-weight: 600; }
+    pre { max-height: 360px; overflow: auto; padding: 12px; background: #0d1525; color: #dbeafe; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SQL Test Runner — v0.4.19 reference</h1>
+    <p class="note">Herramienta de diagnóstico independiente. Carga el Excel localmente en el navegador y no modifica el engine oficial ni envía el contenido del archivo a un servidor.</p>
+
+    <section class="panel">
+      <div class="controls">
+        <label>Archivo Excel: <input id="excel-file" type="file" accept=".xlsx,.xls"></label>
+        <button id="run-tests" type="button" disabled>Ejecutar pruebas</button>
+      </div>
+      <p id="status" class="pending">Selecciona <code>test-data/TEUs.xlsx</code>.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Resultados</h2>
+      <table>
+        <thead><tr><th>Prueba</th><th>Estado</th><th>Detalle</th></tr></thead>
+        <tbody id="test-results"><tr><td colspan="3">Sin ejecutar.</td></tr></tbody>
+      </table>
+    </section>
+
+    <section id="diagnostic-panel" class="panel" hidden>
+      <h2>Diagnóstico de prueba 24-B</h2>
+      <p>Las cuatro etapas se conservan por separado. El primer bloque es un resumen serializable del objeto Arrow devuelto por <code>conn.query()</code>; el objeto completo también se registra en la consola del navegador como <code>window.TMSqlTestRunner.last24B.result</code>.</p>
+      <details open><summary>1. conn.query()</summary><pre id="diag-query"></pre></details>
+      <details><summary>2. result.toArray()</summary><pre id="diag-raw"></pre></details>
+      <details><summary>3. normalizeRows()</summary><pre id="diag-normalized"></pre></details>
+      <details><summary>4. JSON final (setResult equivalente)</summary><pre id="diag-json"></pre></details>
+    </section>
+  </main>
+
+  <script type="module">
+    // Misma versión que el baseline v0.4.19-test.
+    const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+    const XLSX_PACKAGE = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm";
+
+    const fileInput = document.getElementById("excel-file");
+    const runButton = document.getElementById("run-tests");
+    const status = document.getElementById("status");
+    const resultsBody = document.getElementById("test-results");
+    const diagnosticPanel = document.getElementById("diagnostic-panel");
+
+    let duckdb;
+    let XLSX;
+    let db;
+    let conn;
+    let worker;
+    let workerURL;
+
+    function safeString(value) {
+      return value === null || value === undefined ? "" : String(value);
+    }
+
+    function isEmptyValue(value) {
+      return value === null || value === undefined || (typeof value === "string" && !value.trim());
+    }
+
+    function normalizeHeaderName(value) {
+      return safeString(value)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "")
+        .trim();
+    }
+
+    function makeUniqueHeaders(headers) {
+      const used = new Map();
+      return headers.map((header, index) => {
+        const base = safeString(header).trim() || `Columna ${index + 1}`;
+        const count = (used.get(base) || 0) + 1;
+        used.set(base, count);
+        return count === 1 ? base : `${base} (${count})`;
+      });
+    }
+
+    function isDateHeader(name) {
+      return ["fecha", "date", "fechacombinada", "fechaevento", "eventdate"].includes(normalizeHeaderName(name));
+    }
+
+    function looksLikeDateString(value) {
+      if (value instanceof Date) return true;
+      if (typeof value === "number" || typeof value === "bigint") return false;
+      const text = safeString(value).trim();
+      return /^\d{4}-\d{1,2}-\d{1,2}$/.test(text) || /^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(text) || /^[A-Za-zÁÉÍÓÚáéíóú]+[/-]\d{4}$/.test(text);
+    }
+
+    function looksLikeInteger(value) {
+      if (typeof value === "bigint") return true;
+      if (typeof value === "number") return Number.isInteger(value);
+      const text = safeString(value).trim();
+      return !!text && /^-?\d+$/.test(text.replace(/,/g, ""));
+    }
+
+    function looksLikeDouble(value) {
+      if (typeof value === "number") return Number.isFinite(value);
+      const text = safeString(value).replace(/,/g, "").trim();
+      return !!text && Number.isFinite(Number(text));
+    }
+
+    function inferColumnType(columnIndex, columnName, rows) {
+      const values = rows.map((row) => row[columnIndex]).filter((value) => !isEmptyValue(value));
+      const normalizedName = normalizeHeaderName(columnName);
+      const numericSpecialNames = ["local", "locales", "localteus", "localteu", "transshipment", "transhipment", "transshipmentteus", "transshipmentteu", "transbordo", "totalteus", "totalteu", "teustotales", "teutotales", "total"];
+      let sqlType = "VARCHAR";
+      if (isDateHeader(columnName) || (values.length && values.every(looksLikeDateString))) sqlType = "DATE";
+      else if (normalizedName === "ano" || normalizedName === "year" || (numericSpecialNames.includes(normalizedName) && values.length && values.every(looksLikeInteger)) || (values.length && values.every(looksLikeInteger))) sqlType = "BIGINT";
+      else if ((numericSpecialNames.includes(normalizedName) && values.length && values.every(looksLikeDouble)) || (values.length && values.every(looksLikeDouble))) sqlType = "DOUBLE";
+      return { column_index: columnIndex, column_name: columnName, sqlType };
+    }
+
+    function excelSerialToDate(serial) {
+      const number = Number(serial);
+      if (!Number.isFinite(number)) return null;
+      const excelEpoch = Date.UTC(1899, 11, 30);
+      return new Date(excelEpoch + Math.round(number * 86400000));
+    }
+
+    function normalizeExcelDate(value) {
+      if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+      if (typeof value === "number") return excelSerialToDate(value);
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function dateToSql(date) {
+      return date.toISOString().slice(0, 10);
+    }
+
+    function escapeSqlIdentifier(name) {
+      return `"${safeString(name).replace(/"/g, "\"\"")}"`;
+    }
+
+    function escapeSqlString(value) {
+      return safeString(value).replace(/'/g, "''");
+    }
+
+    function valueToSql(value, type) {
+      if (isEmptyValue(value)) return "NULL";
+      if (type === "DATE") {
+        const date = normalizeExcelDate(value);
+        return date ? `DATE '${dateToSql(date)}'` : "NULL";
+      }
+      if (type === "BIGINT" || type === "DOUBLE") {
+        const number = Number(safeString(value).replace(/,/g, "").trim());
+        if (!Number.isFinite(number)) return "NULL";
+        return type === "BIGINT" ? String(Math.trunc(number)) : String(number);
+      }
+      return `'${escapeSqlString(value)}'`;
+    }
+
+    function buildCreateTableSql(headers, inferredTypes) {
+      const columns = headers.map((header, index) => `${escapeSqlIdentifier(header)} ${inferredTypes[index]?.sqlType || "VARCHAR"}`);
+      return `CREATE TABLE excel_data (${columns.join(",\n")});`;
+    }
+
+    function buildInsertSql(headers, rows, inferredTypes) {
+      const values = rows.map((row) => `(${headers.map((_, index) => valueToSql(row[index], inferredTypes[index]?.sqlType || "VARCHAR")).join(", ")})`);
+      return `INSERT INTO excel_data (${headers.map(escapeSqlIdentifier).join(", ")}) VALUES ${values.join(",\n")};`;
+    }
+
+    function readWorksheet(worksheet) {
+      const matrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null, raw: true, blankrows: true });
+      if (!matrix.length) return { headers: [], rows: [] };
+      const headers = makeUniqueHeaders(matrix[0] || []);
+      const rows = matrix.slice(1)
+        .map((row) => headers.map((_, index) => row?.[index] ?? null))
+        .filter((row) => row.some((value) => !isEmptyValue(value)));
+      return { headers, rows };
+    }
+
+    // Bloque de normalización equivalente al baseline v0.4.19-test.
+    function normalizeSigned32Number(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return value;
+      if (Number.isInteger(value) && value >= 4294967295 - 2147483648) return value - 4294967296;
+      return value;
+    }
+
+    function normalizeNumericArray(value) {
+      if (!Array.isArray(value) || value.length !== 4) return null;
+      const nums = value.map((item) => typeof item === "bigint" ? Number(item) : typeof item === "number" ? item : Number(item));
+      if (!nums.every(Number.isFinite)) return null;
+      const signed = nums.map(normalizeSigned32Number);
+      if (signed[1] === 0 && signed[2] === 0 && signed[3] === 0) return signed[0];
+      if (signed[1] === -1 && signed[2] === -1 && signed[3] === -1) return signed[0];
+      return null;
+    }
+
+    function normalizeValue(value, key = "") {
+      if (value === null || value === undefined) return null;
+      if (typeof value === "bigint") {
+        const number = Number(value);
+        return Number.isSafeInteger(number) ? number : value.toString();
+      }
+      if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+      if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+      if (ArrayBuffer.isView(value)) {
+        const array = Array.from(value);
+        const scalar = normalizeNumericArray(array);
+        if (scalar !== null && /sum|avg|min|max|count|total|registros|diferencia|variacion|acumulado|ranking|rank/i.test(key)) return scalar;
+        return array.map(normalizeSigned32Number);
+      }
+      if (Array.isArray(value)) {
+        const scalar = normalizeNumericArray(value);
+        if (scalar !== null && /sum|avg|min|max|count|total|registros|diferencia|variacion|acumulado|ranking|rank/i.test(key)) return scalar;
+        return value.map((item) => normalizeValue(item, key));
+      }
+      if (typeof value === "object") {
+        const output = {};
+        for (const [entryKey, entryValue] of Object.entries(value)) output[entryKey] = normalizeValue(entryValue, entryKey);
+        return output;
+      }
+      return value;
+    }
+
+    function normalizeRows(rows) {
+      return Array.isArray(rows) ? rows.map((row) => normalizeValue(row)) : [];
+    }
+
+    function jsonSafe(value) {
+      return JSON.parse(JSON.stringify(value, (_, item) => {
+        if (typeof item !== "bigint") return item;
+        const number = Number(item);
+        return Number.isSafeInteger(number) ? number : item.toString();
+      }));
+    }
+
+    function serialize(value) {
+      return JSON.stringify(value, (_, item) => {
+        if (typeof item === "bigint") return item.toString();
+        if (ArrayBuffer.isView(item)) return { type: item.constructor.name, values: Array.from(item) };
+        return item;
+      }, 2);
+    }
+
+    function snapshotRows(rows) {
+      return rows.map((row) => {
+        const copy = {};
+        for (const [key, value] of Object.entries(row)) {
+          copy[key] = ArrayBuffer.isView(value)
+            ? { type: value.constructor.name, values: Array.from(value) }
+            : value;
+        }
+        return copy;
+      });
+    }
+
+    async function loadLibraries() {
+      if (!duckdb) duckdb = await import(DUCKDB_PACKAGE);
+      if (!XLSX) XLSX = await import(XLSX_PACKAGE);
+    }
+
+    async function createDuckDB() {
+      if (conn) return;
+      const bundle = duckdb.getJsDelivrBundles().eh;
+      workerURL = URL.createObjectURL(new Blob([`importScripts("${bundle.mainWorker}");`], { type: "application/javascript" }));
+      worker = new Worker(workerURL);
+      db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      conn = await db.connect();
+    }
+
+    async function loadExcel(file) {
+      await loadLibraries();
+      await createDuckDB();
+      await conn.query("DROP TABLE IF EXISTS excel_data;");
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, raw: true });
+      const sheetName = workbook.SheetNames?.[0];
+      if (!sheetName) throw new Error("El archivo Excel no contiene hojas.");
+      const parsed = readWorksheet(workbook.Sheets[sheetName]);
+      if (!parsed.headers.length || !parsed.rows.length) throw new Error("No se encontraron encabezados o filas con datos.");
+      const inferredTypes = parsed.headers.map((header, index) => inferColumnType(index, header, parsed.rows));
+      await conn.query(buildCreateTableSql(parsed.headers, inferredTypes));
+      await conn.query(buildInsertSql(parsed.headers, parsed.rows, inferredTypes));
+      return { headers: parsed.headers, rows: parsed.rows, inferredTypes };
+    }
+
+    async function captureQuery(sql) {
+      const result = await conn.query(sql);
+      const rawRows = result.toArray();
+      const normalizedRows = normalizeRows(rawRows);
+      return { result, rawRows, normalizedRows };
+    }
+
+    function equals(actual, expected) {
+      return JSON.stringify(actual) === JSON.stringify(expected);
+    }
+
+    function addResult(name, passed, detail) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td>${name}</td><td><span class="badge ${passed ? "pass" : "fail"}">${passed ? "APROBADA" : "FALLIDA"}</span></td><td>${detail}</td>`;
+      resultsBody.append(row);
+    }
+
+    function setStatus(message, className) {
+      status.textContent = message;
+      status.className = className;
+    }
+
+    async function runTests() {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      runButton.disabled = true;
+      resultsBody.innerHTML = "";
+      diagnosticPanel.hidden = true;
+      setStatus("Cargando Excel y preparando DuckDB-Wasm localmente…", "pending");
+      try {
+        const loaded = await loadExcel(file);
+        const expectedHeaders = ["Fecha", "Año", "Mes", "Fecha Combinada", "Local", "Transshipment", "Total TEUs"];
+        addResult("Carga y columnas", equals(loaded.headers, expectedHeaders), `Columnas detectadas: ${loaded.headers.join(", ")}`);
+
+        const count = await captureQuery("SELECT COUNT(*) AS registros FROM excel_data;");
+        addResult("COUNT(*)", count.normalizedRows[0]?.registros === 18, `Resultado: ${serialize(count.normalizedRows)}`);
+
+        const grouped = await captureQuery(`SELECT "Año", SUM("Total TEUs") AS suma_normal FROM excel_data GROUP BY "Año" ORDER BY "Año";`);
+        const expectedGrouped = [{ Año: 2025, suma_normal: 1535012 }, { Año: 2026, suma_normal: 661359 }];
+        addResult("GROUP BY Año + SUM(Total TEUs)", equals(grouped.normalizedRows, expectedGrouped), `Resultado: ${serialize(grouped.normalizedRows)}`);
+
+        const filtered = await captureQuery(`SELECT COUNT(*) AS registros, SUM("Total TEUs") AS suma FROM excel_data WHERE "Local" > "Transshipment";`);
+        const expectedFiltered = [{ registros: 15, suma: 1824765 }];
+        addResult("WHERE Local > Transshipment", equals(filtered.normalizedRows, expectedFiltered), `Resultado: ${serialize(filtered.normalizedRows)}`);
+
+        const sql24B = `SELECT
+  "Año",
+  SUM("Total TEUs") AS suma_normal,
+  SUM("Total TEUs") FILTER (WHERE "Local" > "Transshipment") AS suma_filtrada,
+  typeof(SUM("Total TEUs") FILTER (WHERE "Local" > "Transshipment")) AS tipo_suma_filtrada
+FROM excel_data
+GROUP BY "Año"
+ORDER BY "Año";`;
+        const test24B = await captureQuery(sql24B);
+        const expected24B = [
+          { Año: 2025, suma_normal: 1535012, suma_filtrada: 1383406, tipo_suma_filtrada: "HUGEINT" },
+          { Año: 2026, suma_normal: 661359, suma_filtrada: 441359, tipo_suma_filtrada: "HUGEINT" }
+        ];
+        const rawFilterValues = test24B.rawRows.map((row) => row.suma_filtrada);
+        const rawFilterIsFourPart = rawFilterValues.every((value) => ArrayBuffer.isView(value) && value.length === 4);
+        const filterPassed = equals(test24B.normalizedRows, expected24B) && rawFilterIsFourPart;
+        addResult("24-B: SUM(...) FILTER(...)", filterPassed, `Normalizado: ${serialize(test24B.normalizedRows)}`);
+        addResult("typeof(SUM(...) FILTER(...))", test24B.normalizedRows.every((row) => row.tipo_suma_filtrada === "HUGEINT"), `Tipos: ${test24B.normalizedRows.map((row) => row.tipo_suma_filtrada).join(", ")}`);
+
+        const payload = { procesamiento: "LOCAL", sql: sql24B, filas_resultado: test24B.normalizedRows.length, resultado: test24B.normalizedRows };
+        const safePayload = jsonSafe(normalizeValue(payload));
+        const finalJson = JSON.stringify(safePayload, null, 2);
+        document.getElementById("diag-query").textContent = serialize({ constructor: test24B.result?.constructor?.name, numRows: test24B.result?.numRows, schema: String(test24B.result?.schema), columnNames: test24B.result?.schema?.fields?.map((field) => field.name) });
+        document.getElementById("diag-raw").textContent = serialize(snapshotRows(test24B.rawRows));
+        document.getElementById("diag-normalized").textContent = serialize(test24B.normalizedRows);
+        document.getElementById("diag-json").textContent = finalJson;
+        diagnosticPanel.hidden = false;
+        window.TMSqlTestRunner = { last24B: { ...test24B, safePayload, finalJson } };
+        console.log("TMSqlTestRunner 24-B: result directo de conn.query()", test24B.result);
+
+        const allPassed = [...resultsBody.querySelectorAll(".badge")].every((badge) => badge.textContent === "APROBADA");
+        setStatus(allPassed ? "Todas las pruebas iniciales fueron aprobadas." : "Una o más pruebas fallaron; revisa el detalle y el diagnóstico 24-B.", allPassed ? "pass" : "fail");
+      } catch (error) {
+        addResult("Ejecución del runner", false, error?.message || String(error));
+        setStatus("El runner no pudo completar la ejecución.", "fail");
+        console.error(error);
+      } finally {
+        runButton.disabled = false;
+      }
+    }
+
+    fileInput.addEventListener("change", () => {
+      runButton.disabled = !fileInput.files?.length;
+      setStatus(fileInput.files?.length ? `Listo para cargar: ${fileInput.files[0].name}` : "Selecciona test-data/TEUs.xlsx.", "pending");
+    });
+    runButton.addEventListener("click", runTests);
+  </script>
+</body>
+</html>
