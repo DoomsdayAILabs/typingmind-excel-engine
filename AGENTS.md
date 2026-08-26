@@ -24,21 +24,25 @@ El procesamiento de los datos debe permanecer LOCAL.
 
 La versión oficial y última versión validada actualmente es:
 
-`typingmind-excel-engine-v0.4.19-test.js`
+`typingmind-excel-engine-v0.4.20-test.js`
 
 Esta versión es el BASELINE OFICIAL del proyecto.
+
+La versión anterior validada se conserva intacta como referencia:
+
+`typingmind-excel-engine-v0.4.19-test.js`
 
 ### Regla fundamental
 
 NO modificar directamente:
 
-`typingmind-excel-engine-v0.4.19-test.js`
+`typingmind-excel-engine-v0.4.20-test.js`
 
 Las nuevas versiones deben partir de esta versión.
 
 La siguiente versión, si se requiere una modificación, será:
 
-`typingmind-excel-engine-v0.4.20-test.js`
+`typingmind-excel-engine-v0.4.21-test.js`
 
 No utilizar versiones anteriores como base de nuevas modificaciones.
 
@@ -144,21 +148,13 @@ Entre ellas:
 - EXTRACT
 - cálculos porcentuales
 - FILTER con COUNT
+- SUM(...) FILTER (...)
 
-Existe actualmente una anomalía pendiente relacionada con:
+La anomalía de `SUM(...) FILTER (...)` que devolvía arrays `[n, 0, 0, 0]` quedó resuelta en v0.4.20.
 
-`SUM(...) FILTER (...)`
+No era un error de DuckDB. Arrow entrega HUGEINT / Decimal(38,0) como un typed array de 4 enteros. v0.4.19 solo lo convertía a escalar si el alias coincidía con `sum|avg|min|max|count|total|...`. v0.4.20 convierte ese patrón a escalar sin depender del nombre de la columna.
 
-Esta anomalía todavía NO debe considerarse un error de DuckDB.
-
-Primero debe determinarse si el valor incorrecto aparece en:
-
-DuckDB
-→ Arrow
-→ JavaScript
-→ serialización JSON
-
-Antes de modificar el código.
+Validado con pruebas 24-B (`AS suma_filtrada`) y 24-C (`AS x`) en `tests/sql-test-runner.html`.
 
 ---
 
@@ -189,11 +185,11 @@ Toda corrección debe comprobar posibles regresiones.
 
 Baseline actual:
 
-`v0.4.19-test`
+`v0.4.20-test`
 
 Siguiente versión posible:
 
-`v0.4.20-test`
+`v0.4.21-test`
 
 No sobrescribir el baseline.
 

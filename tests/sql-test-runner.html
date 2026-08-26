@@ -28,7 +28,7 @@
 </head>
 <body>
   <main>
-    <h1>SQL Test Runner — v0.4.19 reference</h1>
+    <h1>SQL Test Runner — v0.4.20 candidate</h1>
     <p class="note">Herramienta de diagnóstico independiente. Carga el Excel localmente en el navegador y no modifica el engine oficial ni envía el contenido del archivo a un servidor.</p>
 
     <section class="panel">
@@ -50,15 +50,24 @@
     <section id="diagnostic-panel" class="panel" hidden>
       <h2>Diagnóstico de prueba 24-B</h2>
       <p>Las cuatro etapas se conservan por separado. El primer bloque es un resumen serializable del objeto Arrow devuelto por <code>conn.query()</code>; el objeto completo también se registra en la consola del navegador como <code>window.TMSqlTestRunner.last24B.result</code>.</p>
-      <details open><summary>1. conn.query()</summary><pre id="diag-query"></pre></details>
+      <details><summary>1. conn.query()</summary><pre id="diag-query"></pre></details>
       <details><summary>2. result.toArray()</summary><pre id="diag-raw"></pre></details>
       <details><summary>3. normalizeRows()</summary><pre id="diag-normalized"></pre></details>
       <details><summary>4. JSON final (setResult equivalente)</summary><pre id="diag-json"></pre></details>
     </section>
+
+    <section id="diagnostic-panel-24c" class="panel" hidden>
+      <h2>Diagnóstico de prueba 24-C</h2>
+      <p>Misma consulta que 24-B, pero el <code>SUM(...) FILTER (...)</code> se aliasa como <code>x</code>. En v0.4.19 ese alias dejaba el array HUGEINT en el JSON. v0.4.20 debe convertirlo a escalar. Copia sobre todo los bloques 3 y 4.</p>
+      <details open><summary>1. conn.query()</summary><pre id="diag-query-24c"></pre></details>
+      <details open><summary>2. result.toArray()</summary><pre id="diag-raw-24c"></pre></details>
+      <details open><summary>3. normalizeRows()</summary><pre id="diag-normalized-24c"></pre></details>
+      <details open><summary>4. JSON final (setResult equivalente)</summary><pre id="diag-json-24c"></pre></details>
+    </section>
   </main>
 
   <script type="module">
-    // Misma versión que el baseline v0.4.19-test.
+    // Normalización alineada con el candidato v0.4.20-test.
     const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
     const XLSX_PACKAGE = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm";
 
@@ -67,6 +76,7 @@
     const status = document.getElementById("status");
     const resultsBody = document.getElementById("test-results");
     const diagnosticPanel = document.getElementById("diagnostic-panel");
+    const diagnosticPanel24C = document.getElementById("diagnostic-panel-24c");
 
     let duckdb;
     let XLSX;
@@ -197,7 +207,7 @@
       return { headers, rows };
     }
 
-    // Bloque de normalización equivalente al baseline v0.4.19-test.
+    // Bloque de normalización equivalente al candidato v0.4.20-test.
     function normalizeSigned32Number(value) {
       if (typeof value !== "number" || !Number.isFinite(value)) return value;
       if (Number.isInteger(value) && value >= 4294967295 - 2147483648) return value - 4294967296;
@@ -225,12 +235,12 @@
       if (ArrayBuffer.isView(value)) {
         const array = Array.from(value);
         const scalar = normalizeNumericArray(array);
-        if (scalar !== null && /sum|avg|min|max|count|total|registros|diferencia|variacion|acumulado|ranking|rank/i.test(key)) return scalar;
+        if (scalar !== null) return scalar;
         return array.map(normalizeSigned32Number);
       }
       if (Array.isArray(value)) {
         const scalar = normalizeNumericArray(value);
-        if (scalar !== null && /sum|avg|min|max|count|total|registros|diferencia|variacion|acumulado|ranking|rank/i.test(key)) return scalar;
+        if (scalar !== null) return scalar;
         return value.map((item) => normalizeValue(item, key));
       }
       if (typeof value === "object") {
@@ -331,6 +341,7 @@
       runButton.disabled = true;
       resultsBody.innerHTML = "";
       diagnosticPanel.hidden = true;
+      diagnosticPanel24C.hidden = true;
       setStatus("Cargando Excel y preparando DuckDB-Wasm localmente…", "pending");
       try {
         const loaded = await loadExcel(file);
@@ -375,11 +386,37 @@ ORDER BY "Año";`;
         document.getElementById("diag-normalized").textContent = serialize(test24B.normalizedRows);
         document.getElementById("diag-json").textContent = finalJson;
         diagnosticPanel.hidden = false;
-        window.TMSqlTestRunner = { last24B: { ...test24B, safePayload, finalJson } };
+        const sql24C = `SELECT
+  "Año",
+  SUM("Total TEUs") AS suma_normal,
+  SUM("Total TEUs") FILTER (WHERE "Local" > "Transshipment") AS x
+FROM excel_data
+GROUP BY "Año"
+ORDER BY "Año";`;
+        const test24C = await captureQuery(sql24C);
+        const expected24C = [
+          { Año: 2025, suma_normal: 1535012, x: 1383406 },
+          { Año: 2026, suma_normal: 661359, x: 441359 }
+        ];
+        const payload24C = { procesamiento: "LOCAL", sql: sql24C, filas_resultado: test24C.normalizedRows.length, resultado: test24C.normalizedRows };
+        const safePayload24C = jsonSafe(normalizeValue(payload24C));
+        const finalJson24C = JSON.stringify(safePayload24C, null, 2);
+        addResult(
+          "24-C: SUM(...) FILTER(...) AS x",
+          equals(test24C.normalizedRows, expected24C),
+          `Normalizado: ${serialize(test24C.normalizedRows)}`
+        );
+        document.getElementById("diag-query-24c").textContent = serialize({ constructor: test24C.result?.constructor?.name, numRows: test24C.result?.numRows, schema: String(test24C.result?.schema), columnNames: test24C.result?.schema?.fields?.map((field) => field.name) });
+        document.getElementById("diag-raw-24c").textContent = serialize(snapshotRows(test24C.rawRows));
+        document.getElementById("diag-normalized-24c").textContent = serialize(test24C.normalizedRows);
+        document.getElementById("diag-json-24c").textContent = finalJson24C;
+        diagnosticPanel24C.hidden = false;
+        window.TMSqlTestRunner = { last24B: { ...test24B, safePayload, finalJson }, last24C: { ...test24C, safePayload: safePayload24C, finalJson: finalJson24C } };
         console.log("TMSqlTestRunner 24-B: result directo de conn.query()", test24B.result);
+        console.log("TMSqlTestRunner 24-C: result directo de conn.query()", test24C.result);
 
         const allPassed = [...resultsBody.querySelectorAll(".badge")].every((badge) => badge.textContent === "APROBADA");
-        setStatus(allPassed ? "Todas las pruebas iniciales fueron aprobadas." : "Una o más pruebas fallaron; revisa el detalle y el diagnóstico 24-B.", allPassed ? "pass" : "fail");
+        setStatus(allPassed ? "Todas las pruebas iniciales fueron aprobadas." : "Una o más pruebas fallaron; revisa el detalle y el diagnóstico 24-C.", allPassed ? "pass" : "fail");
       } catch (error) {
         addResult("Ejecución del runner", false, error?.message || String(error));
         setStatus("El runner no pudo completar la ejecución.", "fail");
