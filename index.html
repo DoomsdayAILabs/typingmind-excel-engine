@@ -16,23 +16,11 @@
   </style>
 </head>
 <body>
-
   <h1>TypingMind Excel Engine - Historial de Versiones</h1>
   <p>Haz clic en el enlace para abrir el archivo o presiona <b>Copiar Link</b> para usarlo en TypingMind:</p>
-
-  <ul>
-    <!-- Versión 0.4.11 -->
-    <li>
-      <div>
-        <strong>v0.4.11-test:</strong><br>
-        <a href="typingmind-excel-engine-v0.4.11-test.js" target="_blank">typingmind-excel-engine-v0.4.11-test.js</a>
-      </div>
-      <button class="btn" onclick="copiarUrl('typingmind-excel-engine-v0.4.11-test.js')">Copiar Link</button>
-    </li>
-
-    <!-- Aquí puedes ir agregando más versiones en el futuro -->
+  <ul id="lista-versiones">
+    <li>Cargando versiones...</li>
   </ul>
-
   <script>
     function copiarUrl(nombreArchivo) {
       const urlCompleta = window.location.href.split('#')[0].split('?')[0] + nombreArchivo;
@@ -40,7 +28,46 @@
         alert('¡Enlace copiado al portapapeles!\n' + urlCompleta);
       });
     }
-  </script>
 
+    async function cargarVersiones() {
+      const owner = 'doomsdayailabs';
+      const repo = 'typingmind-excel-engine';
+      const lista = document.getElementById('lista-versiones');
+
+      try {
+        const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/`);
+        const archivos = await res.json();
+
+        const versiones = archivos
+          .filter(f => /^typingmind-excel-engine-v[\d.]+.*\.js$/.test(f.name))
+          .map(f => ({
+            nombre: f.name,
+            version: f.name.match(/v([\d.]+(?:-\w+)?)/)?.[1] || ''
+          }))
+          .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }));
+
+        if (versiones.length === 0) {
+          lista.innerHTML = '<li>No se encontraron versiones.</li>';
+          return;
+        }
+
+        lista.innerHTML = versiones.map(v => `
+          <li>
+            <div>
+              <strong>v${v.version}:</strong><br>
+              <a href="${v.nombre}" target="_blank">${v.nombre}</a>
+            </div>
+            <button class="btn" onclick="copiarUrl('${v.nombre}')">Copiar Link</button>
+          </li>
+        `).join('');
+
+      } catch (err) {
+        lista.innerHTML = '<li>Error al cargar versiones.</li>';
+        console.error(err);
+      }
+    }
+
+    cargarVersiones();
+  </script>
 </body>
 </html>
