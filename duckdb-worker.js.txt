@@ -3311,3 +3311,98 @@ ORDER BY
   initialize();
 
 })();
+/* ============================================================
+ * CARGA DE DATOS PARQUET
+ * ============================================================ */
+
+async function loadParquet(parquetData, tableName = "excel_data") {
+  if (!conn) {
+    await initDuckDB();
+  }
+
+  if (!parquetData) {
+    throw new Error("No se proporcionaron datos Parquet.");
+  }
+
+  const cleanTableName = tableName.replace(/[^a-zA-Z0-9_]/g, "_");
+
+  const start = performance.now();
+
+  await conn.query(`DROP TABLE IF EXISTS ${cleanTableName};`);
+
+  const createSql = `
+    CREATE TABLE ${cleanTableName} AS
+    SELECT * FROM read_parquet('${parquetData}');
+  `;
+
+  await conn.query(createSql);
+  const elapsed = performance.now() - start;
+
+  const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${cleanTableName};`);
+  const countRows = countResult.toArray();
+
+  const schemaResult = await conn.query(`
+    SELECT column_name, data_type
+    FROM information_schema.columns
+    WHERE table_name = '${cleanTableName}'
+    ORDER BY ordinal_position;
+  `);
+  const schema = schemaResult.toArray();
+
+  const previewResult = await conn.query(`SELECT * FROM ${cleanTableName} LIMIT 10;`);
+  const preview = previewResult.toArray();
+
+  return {
+    procesamiento: "LOCAL_NATIVO_WORKER",
+    formato: "PARQUET",
+    tabla: cleanTableName,
+    registros: countRows[0]?.registros ?? 0,
+    tiempo_carga_ms: Number(elapsed.toFixed(1)),
+    columnas: schema.map((c) => c.column_name),
+    esquema: schema,
+    preview: preview
+  };
+}
+
+/* ============================================================
+ * DISPATCHER DE MENSAJES
+ * ============================================================ */
+
+self.onmessage = async (event) => {
+  const { type, ...payload } = event.data || {};
+
+  try {
+    let result;
+
+    switch (type) {
+      case "initDuckDB":
+        result = await initDuckDB();
+        break;
+
+      case "executeQuery":
+        result = await executeQuery(payload.sql);
+        break;
+
+      case "loadCSV":
+        result = await loadCSV(payload.csvData, payload.tableName);
+        break;
+
+      case "loadParquet":
+        result = await loadParquet(payload.parquetData, payload.tableName);
+        break;
+
+      default:
+        throw new Error(`Tipo de acción desconocido: ${type}`);
+    }
+
+    self.postMessage({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    self.postMessage({
+      success: false,
+      error: error.message || "Error desconocido"
+    });
+  }
+};
