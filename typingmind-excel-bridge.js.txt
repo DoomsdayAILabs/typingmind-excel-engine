@@ -1,3 +1,6 @@
+Aquí está el contenido completo del archivo `typingmind-excel-bridge.js`:
+
+```javascript
 /*
  * TypingMind Excel Bridge — Comunicación con DuckDB Worker
  *
@@ -23,7 +26,7 @@ function initializeWorker() {
   worker = new Worker(WORKER_PATH);
 
   worker.onmessage = (event) => {
-    const { id, type, success, result, error, stack } = event.data || {};
+    const { id, success, data, error } = event.data || {};
 
     if (!id || !messageQueue[id]) {
       return;
@@ -32,14 +35,10 @@ function initializeWorker() {
     const { resolve, reject } = messageQueue[id];
     delete messageQueue[id];
 
-    if (type === "response" && success) {
-      resolve(result);
-    } else if (type === "response" && !success) {
-      const err = new Error(error || "Error en worker");
-      err.stack = stack;
-      reject(err);
+    if (success) {
+      resolve(data);
     } else {
-      reject(new Error(`Tipo de mensaje desconocido: ${type}`));
+      reject(new Error(error || "Error en worker"));
     }
   };
 
@@ -54,7 +53,7 @@ function initializeWorker() {
   };
 }
 
-/* ============================================================
+/* ============================================================\
  * ENVÍO DE MENSAJES AL WORKER
  * ============================================================ */
 
@@ -80,17 +79,17 @@ function sendToWorker(type, payload = {}) {
   });
 }
 
-/* ============================================================
+/* ============================================================\
  * API PÚBLICA
  * ============================================================ */
 
 const DuckDBBridge = {
-  init: () => sendToWorker("init"),
+  initDuckDB: () => sendToWorker("initDuckDB"),
   executeQuery: (sql) => sendToWorker("executeQuery", { sql }),
-  loadCSV: (fileName, buffer, tableName, options) =>
-    sendToWorker("loadCSV", { fileName, buffer, tableName, options }),
-  loadParquet: (fileName, buffer, tableName) =>
-    sendToWorker("loadParquet", { fileName, buffer, tableName }),
+  loadCSV: (csvData, tableName) =>
+    sendToWorker("loadCSV", { csvData, tableName }),
+  loadParquet: (parquetData, tableName) =>
+    sendToWorker("loadParquet", { parquetData, tableName }),
   terminate: () => {
     if (worker) {
       worker.terminate();
@@ -102,3 +101,4 @@ const DuckDBBridge = {
 
 // Exponer la API al motor principal
 window.TMDuckDBBridge = DuckDBBridge;
+```
