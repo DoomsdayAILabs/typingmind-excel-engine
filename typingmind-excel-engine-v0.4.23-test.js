@@ -1747,134 +1747,83 @@
 
   async function loadExcel(file) {
     try {
-      await loadLibraries();
-      await createDuckDB();
-      await resetDatabase();
+      // No se necesita loadLibraries() ni createDuckDB() aquí
+      // porque el bridge inicializa el worker y las librerías.
+      await resetDatabase(); // Reiniciar la base de datos si es necesario
 
-      currentFile =
-        file;
+      currentFile = file;
+      const fileExtension = file.name.split('.').pop().toLowerCase();
 
-      const buffer =
-        await file.arrayBuffer();
+      let sheetNames = [];
+      let parsed = {};
+      let loadResult = null;
 
-      const workbook =
-        XLSX.read(
-          buffer,
-          {
-            type:
-              "array",
-
-            cellDates:
-              true,
-
-            raw:
-              true
-          }
+      if (fileExtension === "csv") {
+        updateStatus("Cargando CSV nativamente...");
+        const csvText = await file.text();
+        loadResult = await window.TMDuckDBBridge.loadCSV(csvText, "excel_data");
+        parsed.physicalRows = loadResult.registros;
+        currentRows.length = loadResult.registros;
+        currentHeaders = loadResult.columnas;
+        currentInferredTypes = loadResult.esquema;
+        sheetNames = ["excel_data"];
+        currentSheetName = "excel_data";
+      } else if (fileExtension === "parquet") {
+        updateStatus("Cargando Parquet nativamente...");
+        const parquetBuffer = await file.arrayBuffer();
+        loadResult = await window.TMDuckDBBridge.loadParquet(parquetBuffer, "excel_data");
+        parsed.physicalRows = loadResult.registros;
+        currentRows.length = loadResult.registros;
+        currentHeaders = loadResult.columnas;
+        currentInferredTypes = loadResult.esquema;
+        sheetNames = ["excel_data"];
+        currentSheetName = "excel_data";
+      } else { // Asumimos XLSX para cualquier otra extensión
+        updateStatus("Procesando Excel...");
+        const buffer = await file.arrayBuffer();
+        currentWorkbook = XLSX.read(buffer, {
+          type: "array",
+          cellDates: true,
+          raw: true
+        });
+        sheetNames = currentWorkbook.SheetNames;
+        currentSheetName = sheetNames[0]; // Tomar la primera hoja por defecto
+        parsed = parseExcelSheet(
+          currentWorkbook.Sheets[currentSheetName]
         );
+        currentHeaders = parsed.headers;
+        currentRows = parsed.rows;
+        currentInferredTypes = parsed.inferredTypes;
 
-      currentWorkbook =
-        workbook;
+        if (!currentHeaders.length) {
+          throw new Error("No se encontraron encabezados.");
+        }
+        if (!currentRows.length) {
+          throw new Error("No se encontraron filas con datos.");
+        }
 
-      const sheetNames =
-        workbook.SheetNames ||
-        [];
-
-      if (
-        !sheetNames.length
-      ) {
-        throw new Error(
-          "El archivo Excel no contiene hojas."
-        );
+        const createSql = buildCreateTableSql(
+            currentHeaders,
+            currentInferredTypes
+          );
+        await window.TMDuckDBBridge.executeQuery(createSql);
+        
+        const insertSql = buildInsertSql(
+            currentHeaders,
+            currentRows,
+            currentInferredTypes
+          );
+        await window.TMDuckDBBridge.executeQuery(insertSql);
       }
-
-      currentSheetName =
-        sheetNames[0];
-
-      const worksheet =
-        workbook.Sheets[
-          currentSheetName
-        ];
-
-      const parsed =
-        readWorksheet(
-          worksheet
-        );
-
-      currentHeaders =
-        parsed.headers;
-
-      currentRows =
-        parsed.rows;
-
-      if (
-        !currentHeaders.length
-      ) {
-        throw new Error(
-          "No se encontraron encabezados."
-        );
-      }
-
-      if (
-        !currentRows.length
-      ) {
-        throw new Error(
-          "No se encontraron filas con datos."
-        );
-      }
-
-      currentInferredTypes =
-        currentHeaders.map(
-          (
-            header,
-            index
-          ) =>
-            inferColumnType(
-              index,
-              header,
-              currentRows
-            )
-        );
-
-      const createSql =
-        buildCreateTableSql(
-          currentHeaders,
-          currentInferredTypes
-        );
-
-      await conn.query(
-        createSql
-      );
-
-      const insertSql =
-        buildInsertSql(
-          currentHeaders,
-          currentRows,
-          currentInferredTypes
-        );
-
-      await conn.query(
-        insertSql
-      );
 
       const version =
-        await getDuckDBVersion();
-
+        (loadResult && loadResult.duckdb_version) ? loadResult.duckdb_version : (await window.TMDuckDBBridge.executeQuery("SELECT * FROM pragma_version();")).resultado.toArray();
       const schema =
-        await getSchema();
-
+        (loadResult && loadResult.esquema) ? loadResult.esquema : (await window.TMDuckDBBridge.executeQuery(`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'excel_data' ORDER BY ordinal_position;`)).resultado;
       const count =
-        await queryRows(`
-          SELECT
-            COUNT(*) AS registros
-          FROM excel_data;
-        `);
-
+        (loadResult && loadResult.registros) ? [{registros: loadResult.registros}] : (await window.TMDuckDBBridge.executeQuery(`SELECT COUNT(*) AS registros FROM excel_data;`)).resultado;
       const preview =
-        await queryRows(`
-          SELECT *
-          FROM excel_data
-          LIMIT 10;
-        `);
+        (loadResult && loadResult.preview) ? loadResult.preview : (await window.TMDuckDBBridge.executeQuery(`SELECT * FROM excel_data LIMIT 10;`)).resultado;
 
       const specialColumns =
         detectSpecialColumns();
@@ -1884,7 +1833,7 @@
 
       const result = {
         procesamiento:
-          "LOCAL",
+          (fileExtension === "csv" || fileExtension === "parquet") ? "LOCAL_NATIVO_WORKER" : "LOCAL",
 
         engine:
           APP_ID,
@@ -1905,16 +1854,16 @@
           currentSheetName,
 
         filas_fisicas_detectadas:
-          parsed.physicalRows,
+          parsed.physicalRows, // Esto puede necesitar ajuste para CSV/Parquet si el worker no lo devuelve así
 
         filas_reales:
-          parsed.realRows,
+          (loadResult && loadResult.registros) ? loadResult.registros : currentRows.length,
 
         filas_vacias_ignoradas:
           parsed.emptyRows,
 
         filas_insertadas:
-          currentRows.length,
+          (loadResult && loadResult.registros) ? loadResult.registros : currentRows.length,
 
         columnas_detectadas:
           currentHeaders.length,
@@ -1948,10 +1897,10 @@
 
         bundle: {
           mainModule:
-            "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-eh.wasm",
+            null, 
 
           mainWorker:
-            "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-eh.worker.js",
+            null,
 
           pthreadWorker:
             null
