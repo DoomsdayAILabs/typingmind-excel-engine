@@ -1761,19 +1761,20 @@
       if (fileExtension === "csv") {
         updateStatus("Cargando CSV nativamente...");
         const csvText = await file.text();
-        loadResult = await window.TMDuckDBBridge.loadCSV(csvText, "excel_data");
-        parsed.physicalRows = loadResult.registros;
-        currentRows.length = loadResult.registros;
+        const loadResult = await window.TMDuckDBBridge.loadCSV(csvText, "excel_data");
+        currentRows = Array(loadResult.registros).fill(null);
         currentHeaders = loadResult.columnas;
-        currentInferredTypes = loadResult.esquema;
         sheetNames = ["excel_data"];
         currentSheetName = "excel_data";
       } else if (fileExtension === "parquet") {
         updateStatus("Cargando Parquet nativamente...");
         const parquetBuffer = await file.arrayBuffer();
-        loadResult = await window.TMDuckDBBridge.loadParquet(parquetBuffer, "excel_data");
-        parsed.physicalRows = loadResult.registros;
-        currentRows.length = loadResult.registros;
+        const loadResult = await window.TMDuckDBBridge.loadParquet(parquetBuffer, "excel_data");
+        currentRows = Array(loadResult.registros).fill(null);
+        currentHeaders = loadResult.columnas;
+        sheetNames = ["excel_data"];
+        currentSheetName = "excel_data";
+      }
         currentHeaders = loadResult.columnas;
         currentInferredTypes = loadResult.esquema;
         sheetNames = ["excel_data"];
