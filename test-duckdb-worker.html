@@ -75,6 +75,17 @@
     <div class="actions">
       <button id="btnInit" type="button">Inicializar DuckDB</button>
       <button id="btnQuery" type="button">Ejecutar SELECT 1</button>
+      <button id="btnLoadCSV" type="button">Cargar CSV</button>
+    </div>
+
+    <div style="margin-bottom: 20px;">
+      <textarea id="csvData" style="width: 100%; height: 100px; margin-bottom: 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; box-sizing: border-box;">nombre,edad,ciudad
+Ana,30,Lima
+Luis,25,Bogota</textarea>
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <label for="tableName">Nombre de tabla:</label>
+        <input type="text" id="tableName" value="excel_data" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px;">
+      </div>
     </div>
 
     <div id="log"></div>
@@ -168,6 +179,45 @@
         }
       } catch (error) {
         writeLine(`Query FAIL: ${error.message}`, "err");
+      }
+    });
+    function quoteIdentifier(identifier) {
+      return `"${String(identifier).replace(/"/g, '""')}"`;
+    }
+
+    document.getElementById("btnLoadCSV").addEventListener("click", async () => {
+      const csvData = document.getElementById("csvData").value;
+      const tableName = document.getElementById("tableName").value;
+
+      try {
+        const result = await sendRequest("loadCSV", { csvData, tableName }, 120000);
+        writeLine(`CSV cargado: ${JSON.stringify(result, null, 2)}`, "ok");
+
+        // Validación automática
+        if (
+          result.registros === 2 &&
+          result.columnas.includes("nombre") &&
+          result.columnas.includes("edad") &&
+          result.columnas.includes("ciudad") &&
+          result.preview.some(row => row.nombre === "Ana") &&
+          result.preview.some(row => row.nombre === "Luis")
+        ) {
+          writeLine("Validación automática OK", "ok");
+        } else {
+          writeLine("Validación automática fallida", "err");
+        }
+
+        // Consulta automática de conteo seguro
+        const countResult = await sendRequest(
+          "executeQuery",
+          {
+            sql: `SELECT COUNT(*) AS registros FROM ${quoteIdentifier(result.tabla)}`
+          },
+          60000
+        );
+        writeLine(`Conteo automático: ${JSON.stringify(countResult)}`, "ok");
+      } catch (error) {
+        writeLine(`Carga CSV FAIL: ${error.message}`, "err");
       }
     });
   </script>

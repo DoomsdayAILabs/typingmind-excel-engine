@@ -1,6 +1,6 @@
 ﻿"use strict";
 
-const WORKER_VERSION = "v1.0-phase-1a";
+const WORKER_VERSION = "v1.0-phase-1b";
 const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
 
 let db = null;
@@ -157,6 +157,95 @@ async function executeQuery(sql) {
   const rows = result.toArray();
   return normalizeRows(rows);
 }
+function sanitizeTableName(tableName) {
+  const name = String(tableName || "excel_data");
+  const sanitized = name.replace(/[^A-Za-z0-9_]/g, "_");
+  if (!sanitized) return "excel_data";
+  if (/^[0-9]/.test(sanitized)) return `t_${sanitized}`;
+  return sanitized;
+}
+
+function quoteIdentifier(identifier) {
+  const str = String(identifier);
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
+function quoteStringLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+async function loadCSV(csvData, tableName, requestId) {
+  if (!db || !conn) {
+    throw new Error("DuckDB no está inicializado");
+  }
+
+  if (typeof csvData !== "string" || !csvData.trim()) {
+    throw new Error("CSV inválido");
+  }
+
+  const virtualName = `upload_${requestId}.csv`;
+  let fileRegistered = false;
+  let mainError = null;
+  let result;
+
+  try {
+    await db.registerFileText(virtualName, csvData);
+    fileRegistered = true;
+
+    const sanitizedTable = sanitizeTableName(tableName);
+    const quotedTable = quoteIdentifier(sanitizedTable);
+
+    await conn.query(
+      `CREATE OR REPLACE TABLE ${quotedTable} AS
+       SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)})`
+    );
+
+    const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
+    const countRows = countResult.toArray();
+    const registros = countRows[0]?.registros ?? 0;
+
+    const schemaResult = await conn.query(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_name = ${quoteStringLiteral(sanitizedTable)}
+       ORDER BY ordinal_position`
+    );
+    const schemaRows = schemaResult.toArray();
+
+    const previewResult = await conn.query(`SELECT * FROM ${quotedTable} LIMIT 10`);
+    const previewRows = previewResult.toArray();
+
+    result = {
+      procesamiento: "LOCAL_NATIVO_WORKER",
+      formato: "CSV",
+      tabla: sanitizedTable,
+      registros,
+      columnas: schemaRows.map(row => row.column_name),
+      esquema: normalizeRows(schemaRows),
+      preview: normalizeRows(previewRows)
+    };
+  } catch (error) {
+    mainError = error;
+  } finally {
+    if (fileRegistered) {
+      try {
+        await db.unregisterFile(virtualName);
+      } catch (unregisterError) {
+        if (!mainError) {
+          throw unregisterError;
+        }
+      }
+    }
+  }
+
+  if (mainError) {
+    throw mainError;
+  }
+
+  return result;
+}
+
+
 
 self.onmessage = async (event) => {
   const { type, requestId, ...payload } = event.data ?? {};
@@ -172,8 +261,10 @@ self.onmessage = async (event) => {
         data = await executeQuery(payload.sql);
         break;
       case "loadCSV":
+        data = await loadCSV(payload.csvData, payload.tableName, requestId);
+        break;
       case "loadParquet":
-        throw new Error(`Acción no disponible en Fase 1A: ${type}`);
+        throw new Error(`Acción no disponible en Fase 1B: ${type}`);
       default:
         throw new Error(`Tipo de mensaje no reconocido: ${String(type)}`);
     }
