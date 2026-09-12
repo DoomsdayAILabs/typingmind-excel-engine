@@ -43,6 +43,8 @@ async function initDuckDB() {
   await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
   conn = await db.connect();
 
+
+
   return {
     version: WORKER_VERSION,
     status: "ready",
@@ -201,7 +203,7 @@ async function loadCSV(csvData, tableName, requestId) {
     );
 
     const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
-    const countRows = countResult.toArray();
+    const countRows = normalizeRows(countResult.toArray());
     const registros = countRows[0]?.registros ?? 0;
 
     const schemaResult = await conn.query(
@@ -229,7 +231,7 @@ async function loadCSV(csvData, tableName, requestId) {
   } finally {
     if (fileRegistered) {
       try {
-        await db.unregisterFile(virtualName);
+        await db.dropFile(virtualName);
       } catch (unregisterError) {
         if (!mainError) {
           throw unregisterError;
