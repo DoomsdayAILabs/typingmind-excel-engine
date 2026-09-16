@@ -246,6 +246,78 @@ async function loadCSV(csvData, tableName, requestId) {
 
   return result;
 }
+async function loadParquet(parquetData, tableName, requestId) {
+  if (!db || !conn) {
+    throw new Error("DuckDB no está inicializado");
+  }
+
+  if (!parquetData) {
+    throw new Error("Parquet data inválida");
+  }
+
+  const virtualName = `upload_${requestId}.parquet`;
+  let fileRegistered = false;
+  let mainError = null;
+  let result;
+
+  try {
+    const uint8Array = parquetData instanceof Uint8Array ? parquetData : new Uint8Array(parquetData);
+    await db.registerFileBuffer(virtualName, uint8Array);
+    fileRegistered = true;
+
+    const sanitizedTable = sanitizeTableName(tableName);
+    const quotedTable = quoteIdentifier(sanitizedTable);
+
+    await conn.query(
+      `CREATE OR REPLACE TABLE ${quotedTable} AS SELECT * FROM read_parquet(${quoteStringLiteral(virtualName)})`
+    );
+
+    const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
+    const countRows = normalizeRows(countResult.toArray());
+    const registros = countRows[0]?.registros ?? 0;
+
+    const schemaResult = await conn.query(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_name = ${quoteStringLiteral(sanitizedTable)}
+       ORDER BY ordinal_position`
+    );
+    const schemaRows = schemaResult.toArray();
+
+    const previewResult = await conn.query(`SELECT * FROM ${quotedTable} LIMIT 10`);
+    const previewRows = previewResult.toArray();
+
+    result = {
+      procesamiento: "LOCAL_NATIVO_WORKER",
+      formato: "PARQUET",
+      tabla: sanitizedTable,
+      registros,
+      columnas: schemaRows.map(row => row.column_name),
+      esquema: normalizeRows(schemaRows),
+      preview: normalizeRows(previewRows)
+    };
+  } catch (error) {
+    mainError = error;
+  } finally {
+    if (fileRegistered) {
+      try {
+        await db.dropFile(virtualName);
+      } catch (unregisterError) {
+        if (!mainError) {
+          throw unregisterError;
+        }
+      }
+    }
+  }
+
+  if (mainError) {
+    throw mainError;
+  }
+
+  return result;
+}
+
+
 
 
 
@@ -265,8 +337,9 @@ self.onmessage = async (event) => {
       case "loadCSV":
         data = await loadCSV(payload.csvData, payload.tableName, requestId);
         break;
-      case "loadParquet":
-        throw new Error(`Acción no disponible en Fase 1B: ${type}`);
+            case "loadParquet":
+        data = await loadParquet(payload.parquetData, payload.tableName, requestId);
+        break;
       default:
         throw new Error(`Tipo de mensaje no reconocido: ${String(type)}`);
     }

@@ -78,6 +78,19 @@
       <button id="btnLoadCSV" type="button">Cargar CSV</button>
     </div>
 
+    <div class="parquet-section" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;">
+      <h2>Cargar Archivo Parquet</h2>
+      <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+        <label for="parquetFileInput">Archivo Parquet:</label>
+        <input type="file" id="parquetFileInput" accept=".parquet" />
+      </div>
+      <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 20px;">
+        <label for="parquetTableNameInput">Nombre de tabla:</label>
+        <input type="text" id="parquetTableNameInput" value="parquet_data" placeholder="Nombre de tabla" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px;"/>
+      </div>
+      <button id="btnLoadParquet" onclick="cargarParquetDirecto()">Cargar Parquet</button>
+    </div>
+
     <div style="margin-bottom: 20px;">
       <textarea id="csvData" style="width: 100%; height: 100px; margin-bottom: 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; box-sizing: border-box;">nombre,edad,ciudad
 Ana,30,Lima
@@ -181,6 +194,7 @@ Luis,25,Bogota</textarea>
         writeLine(`Query FAIL: ${error.message}`, "err");
       }
     });
+
     function quoteIdentifier(identifier) {
       return `"${String(identifier).replace(/"/g, '""')}"`;
     }
@@ -193,7 +207,6 @@ Luis,25,Bogota</textarea>
         const result = await sendRequest("loadCSV", { csvData, tableName }, 120000);
         writeLine(`CSV cargado: ${JSON.stringify(result, null, 2)}`, "ok");
 
-        // Validación automática
         if (
           result.registros === 2 &&
           result.columnas.includes("nombre") &&
@@ -207,7 +220,6 @@ Luis,25,Bogota</textarea>
           writeLine("Validación automática fallida", "err");
         }
 
-        // Consulta automática de conteo seguro
         const countResult = await sendRequest(
           "executeQuery",
           {
@@ -220,6 +232,49 @@ Luis,25,Bogota</textarea>
         writeLine(`Carga CSV FAIL: ${error.message}`, "err");
       }
     });
+
+    // Función global para cargar Parquet (Conectada al log visual)
+    window.cargarParquetDirecto = function() {
+      try {
+        const fileInput = document.getElementById("parquetFileInput");
+        const tableNameInput = document.getElementById("parquetTableNameInput");
+        const file = fileInput?.files[0];
+        const tableName = tableNameInput?.value || "parquet_data";
+
+        if (!file) {
+          alert("Por favor selecciona un archivo Parquet.");
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+          try {
+            const arrayBuffer = e.target.result;
+            writeLine(`Leyendo ${file.name} (${arrayBuffer.byteLength} bytes)... Enviando al worker.`, "meta");
+
+            const result = await sendRequest(
+              "loadParquet",
+              { parquetData: arrayBuffer, tableName: tableName },
+              120000,
+              [arrayBuffer] 
+            );
+
+            writeLine(`¡Parquet cargado con éxito!\n${JSON.stringify(result, null, 2)}`, "ok");
+            
+          } catch (postErr) {
+            writeLine(`Error procesando Parquet: ${postErr.message}`, "err");
+          }
+        };
+
+        reader.onerror = function() {
+          writeLine("Error del FileReader en el navegador.", "err");
+        };
+
+        reader.readAsArrayBuffer(file);
+      } catch (globalErr) {
+        writeLine("Error crítico en la UI: " + globalErr.message, "err");
+      }
+    };
   </script>
 </body>
 </html>
