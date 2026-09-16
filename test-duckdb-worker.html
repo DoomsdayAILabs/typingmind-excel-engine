@@ -91,6 +91,19 @@
       <button id="btnLoadParquet" onclick="cargarParquetDirecto()">Cargar Parquet</button>
     </div>
 
+    <div class="excel-section" style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 20px;">
+      <h2>Cargar Archivo Excel</h2>
+      <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+        <label for="excelFileInput">Archivo Excel:</label>
+        <input type="file" id="excelFileInput" accept=".xlsx, .xls" />
+      </div>
+      <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 20px;">
+        <label for="excelTableNameInput">Nombre de tabla:</label>
+        <input type="text" id="excelTableNameInput" value="excel_data" placeholder="Nombre de tabla" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px;"/>
+      </div>
+      <button id="btnLoadExcel" onclick="cargarExcelDirecto()">Cargar Excel</button>
+    </div>
+
     <div style="margin-bottom: 20px;">
       <textarea id="csvData" style="width: 100%; height: 100px; margin-bottom: 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; box-sizing: border-box;">nombre,edad,ciudad
 Ana,30,Lima
@@ -263,6 +276,49 @@ Luis,25,Bogota</textarea>
             
           } catch (postErr) {
             writeLine(`Error procesando Parquet: ${postErr.message}`, "err");
+          }
+        };
+
+        reader.onerror = function() {
+          writeLine("Error del FileReader en el navegador.", "err");
+        };
+
+        reader.readAsArrayBuffer(file);
+      } catch (globalErr) {
+        writeLine("Error crítico en la UI: " + globalErr.message, "err");
+      }
+    };
+
+    // Función global para cargar Excel (Conectada al log visual)
+    window.cargarExcelDirecto = function() {
+      try {
+        const fileInput = document.getElementById("excelFileInput");
+        const tableNameInput = document.getElementById("excelTableNameInput");
+        const file = fileInput?.files[0];
+        const tableName = tableNameInput?.value || "excel_data";
+
+        if (!file) {
+          alert("Por favor selecciona un archivo Excel.");
+          return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+          try {
+            const arrayBuffer = e.target.result;
+            writeLine(`Leyendo ${file.name} (${arrayBuffer.byteLength} bytes)... Enviando al worker.`, "meta");
+
+            const result = await sendRequest(
+              "loadExcel",
+              { excelBuffer: arrayBuffer, tableName: tableName },
+              120000,
+              [arrayBuffer] 
+            );
+
+            writeLine(`¡Excel cargado con éxito!\n${JSON.stringify(result, null, 2)}`, "ok");
+            
+          } catch (postErr) {
+            writeLine(`Error procesando Excel: ${postErr.message}`, "err");
           }
         };
 

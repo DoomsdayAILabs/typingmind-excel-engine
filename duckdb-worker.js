@@ -3,6 +3,8 @@
 const WORKER_VERSION = "v1.0-phase-1b";
 const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
 
+importScripts('https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js');
+
 let db = null;
 let conn = null;
 let runtimeWorker = null;
@@ -317,9 +319,82 @@ async function loadParquet(parquetData, tableName, requestId) {
   return result;
 }
 
+async function loadExcel(excelBuffer, tableName, requestId) {
+  if (!db || !conn) {
+    throw new Error("DuckDB no está inicializado");
+  }
 
+  if (!excelBuffer) {
+    throw new Error("Excel data inválida");
+  }
 
+  const virtualName = `upload_${requestId}.csv`;
+  let fileRegistered = false;
+  let mainError = null;
+  let result;
 
+  try {
+    const workbook = XLSX.read(excelBuffer, { type: 'array' });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const csvData = XLSX.utils.sheet_to_csv(worksheet);
+
+    const encoder = new TextEncoder();
+    const csvBuffer = encoder.encode(csvData);
+    await db.registerFileBuffer(virtualName, csvBuffer);
+    fileRegistered = true;
+
+    const sanitizedTable = sanitizeTableName(tableName);
+    const quotedTable = quoteIdentifier(sanitizedTable);
+
+    await conn.query(
+      `CREATE OR REPLACE TABLE ${quotedTable} AS SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)})`
+    );
+
+    const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
+    const countRows = normalizeRows(countResult.toArray());
+    const registros = countRows[0]?.registros ?? 0;
+
+    const schemaResult = await conn.query(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_name = ${quoteStringLiteral(sanitizedTable)}
+       ORDER BY ordinal_position`
+    );
+    const schemaRows = schemaResult.toArray();
+
+    const previewResult = await conn.query(`SELECT * FROM ${quotedTable} LIMIT 10`);
+    const previewRows = previewResult.toArray();
+
+    result = {
+      procesamiento: "LOCAL_NATIVO_WORKER",
+      formato: "EXCEL",
+      tabla: sanitizedTable,
+      registros,
+      columnas: schemaRows.map(row => row.column_name),
+      esquema: normalizeRows(schemaRows),
+      preview: normalizeRows(previewRows)
+    };
+  } catch (error) {
+    mainError = error;
+  } finally {
+    if (fileRegistered) {
+      try {
+        await db.dropFile(virtualName);
+      } catch (unregisterError) {
+        if (!mainError) {
+          throw unregisterError;
+        }
+      }
+    }
+  }
+
+  if (mainError) {
+    throw mainError;
+  }
+
+  return result;
+}
 
 self.onmessage = async (event) => {
   const { type, requestId, ...payload } = event.data ?? {};
@@ -337,8 +412,11 @@ self.onmessage = async (event) => {
       case "loadCSV":
         data = await loadCSV(payload.csvData, payload.tableName, requestId);
         break;
-            case "loadParquet":
+      case "loadParquet":
         data = await loadParquet(payload.parquetData, payload.tableName, requestId);
+        break;
+      case "loadExcel":
+        data = await loadExcel(payload.excelBuffer, payload.tableName, requestId);
         break;
       default:
         throw new Error(`Tipo de mensaje no reconocido: ${String(type)}`);
