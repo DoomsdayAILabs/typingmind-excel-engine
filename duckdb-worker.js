@@ -201,7 +201,7 @@ async function loadCSV(csvData, tableName, requestId) {
 
     await conn.query(
       `CREATE OR REPLACE TABLE ${quotedTable} AS
-       SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)})`
+       SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)}, sample_size=-1, ignore_errors=true)`
     );
 
     const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
