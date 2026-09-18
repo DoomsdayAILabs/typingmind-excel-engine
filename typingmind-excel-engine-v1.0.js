@@ -5,11 +5,11 @@
 (function () {
   "use strict";
 
-  // Configuración del Worker
   const WORKER_PATH = "./duckdb-worker.js";
   let worker = null;
   const pending = new Map();
   let nextRequestId = 1;
+  let ultimosResultados = []; // Almacena la última consulta para inyectarla
 
   // --- 1. Inicialización del Web Worker ---
   function initWorker() {
@@ -25,319 +25,117 @@
         clearTimeout(pendingItem.timer);
         pending.delete(requestId);
 
-        const elapsed = Math.round(performance.now() - pendingItem.startedAt);
-
-        if (success) {
-          console.log(`[TMEE] Respuesta #${requestId} OK en ${elapsed}ms`);
-          pendingItem.resolve(data);
-        } else {
-          console.error(`[TMEE] Error #${requestId} en ${elapsed}ms:`, error);
-          pendingItem.reject(new Error(error));
-        }
+        if (success) pendingItem.resolve(data);
+        else pendingItem.reject(new Error(error));
       };
 
       worker.onerror = (event) => {
-        console.error("[TMEE] Error crítico del Web Worker:", event);
         updateStatus("Error en el Web Worker", "error");
-        for (const [requestId, item] of pending.entries()) {
-          clearTimeout(item.timer);
-          item.reject(new Error(`Worker error para requestId ${requestId}`));
-        }
         pending.clear();
       };
 
-      // Inicializamos DuckDB en el worker de inmediato
       sendRequest("initDuckDB", {}, 120000)
-        .then(() => {
-          updateStatus("Motor DuckDB Listo", "success");
-        })
-        .catch((err) => {
-          console.error("[TMEE] Fallo al inicializar DuckDB:", err);
-          updateStatus("Fallo al iniciar DuckDB: " + err.message, "error");
-        });
+        .then(() => updateStatus("Motor DuckDB Listo", "success"))
+        .catch((err) => updateStatus("Fallo al iniciar DuckDB: " + err.message, "error"));
 
     } catch (e) {
-      console.error("[TMEE] No se pudo instanciar el Web Worker:", e);
       updateStatus("Error de inicialización", "error");
     }
   }
 
-  // Enviar peticiones asíncronas usando Promesas con soporte para Transferables
   function sendRequest(type, payload = {}, timeoutMs = 60000, transferables = []) {
     const requestId = nextRequestId++;
-    const startedAt = performance.now();
-
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId);
-        reject(new Error(`Timeout de ${timeoutMs}ms para requestId ${requestId} (${type})`));
+        reject(new Error(`Timeout de ${timeoutMs}ms para (${type})`));
       }, timeoutMs);
 
-      pending.set(requestId, { resolve, reject, timer, startedAt, type });
-
-      worker.postMessage(
-        {
-          type,
-          requestId,
-          ...payload
-        },
-        transferables
-      );
+      pending.set(requestId, { resolve, reject, timer, type });
+      worker.postMessage({ type, requestId, ...payload }, transferables);
     });
   }
 
   // --- 2. Inyección de la UI del Widget ---
   function injectWidget() {
-    // Evitar doble inyección
     if (document.getElementById("tmee-widget-root")) return;
 
-    // Inyectar Estilos CSS
     const styleEl = document.createElement("style");
     styleEl.id = "tmee-widget-styles";
     styleEl.innerHTML = `
-      #tmee-widget-root {
-        position: fixed;
-        bottom: 20px;
-        left: 20px;
-        width: 380px;
-        max-height: 80vh;
-        background-color: #1e2026;
-        border: 1px solid #374151;
-        border-radius: 12px;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
-        color: #f3f4f6;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        z-index: 99999;
-      }
-      .tmee-header {
-        padding: 12px 16px;
-        background-color: #111318;
-        border-bottom: 1px solid #374151;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .tmee-title {
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.025em;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .tmee-title-icon {
-        color: #10b981;
-        font-weight: bold;
-      }
-      .tmee-status-badge {
-        font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-weight: 500;
-        background-color: #374151;
-        color: #9ca3af;
-        transition: all 0.3s ease;
-      }
-      .tmee-status-badge.pending {
-        background-color: rgba(245, 158, 11, 0.2);
-        color: #fbbf24;
-      }
-      .tmee-status-badge.success {
-        background-color: rgba(16, 185, 129, 0.2);
-        color: #34d399;
-      }
-      .tmee-status-badge.error {
-        background-color: rgba(239, 68, 68, 0.2);
-        color: #f87171;
-      }
-      .tmee-body {
-        padding: 16px;
-        overflow-y: auto;
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      .tmee-dropzone {
-        border: 2px dashed #4b5563;
-        border-radius: 8px;
-        padding: 24px 16px;
-        text-align: center;
-        cursor: pointer;
-        background-color: rgba(255, 255, 255, 0.02);
-        transition: all 0.2s ease;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-      }
-      .tmee-dropzone:hover, .tmee-dropzone.dragover {
-        border-color: #10b981;
-        background-color: rgba(16, 185, 129, 0.05);
-      }
-      .tmee-dropzone-icon {
-        font-size: 24px;
-        color: #9ca3af;
-      }
-      .tmee-dropzone:hover .tmee-dropzone-icon, .tmee-dropzone.dragover .tmee-dropzone-icon {
-        color: #10b981;
-      }
-      .tmee-dropzone-text {
-        font-size: 12px;
-        color: #9ca3af;
-      }
-      .tmee-dropzone-btn {
-        background-color: #374151;
-        color: #f3f4f6;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 6px;
-        font-size: 11px;
-        cursor: pointer;
-        font-weight: 500;
-        transition: background 0.2s;
-      }
-      .tmee-dropzone-btn:hover {
-        background-color: #4b5563;
-      }
-      .tmee-result-container {
-        display: none; /* Se muestra al cargar un archivo */
-        flex-direction: column;
-        gap: 12px;
-        border-top: 1px solid #374151;
-        padding-top: 12px;
-      }
-      .tmee-meta-info {
-        font-size: 12px;
-        background-color: rgba(255, 255, 255, 0.03);
-        border: 1px solid #374151;
-        border-radius: 6px;
-        padding: 8px 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-      }
-      .tmee-meta-row {
-        display: flex;
-        justify-content: space-between;
-      }
-      .tmee-meta-label {
-        color: #9ca3af;
-      }
-      .tmee-meta-value {
-        font-weight: 500;
-        color: #10b981;
-      }
-      .tmee-table-title {
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #9ca3af;
-        margin-bottom: 4px;
-      }
-      .tmee-table-wrapper {
-        max-height: 150px;
-        overflow-x: auto;
-        overflow-y: auto;
-        border: 1px solid #374151;
-        border-radius: 6px;
-        background-color: #111318;
-      }
-      .tmee-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-        text-align: left;
-      }
-      .tmee-table th {
-        background-color: #1f2937;
-        color: #f3f4f6;
-        padding: 6px 8px;
-        border-bottom: 1px solid #374151;
-        font-weight: 600;
-        position: sticky;
-        top: 0;
-      }
-      .tmee-table td {
-        padding: 6px 8px;
-        border-bottom: 1px solid #2d3748;
-        color: #d1d5db;
-        white-space: nowrap;
-      }
-      .tmee-table tr:last-child td {
-        border-bottom: none;
-      }
-      .tmee-table tr:hover td {
-        background-color: rgba(255, 255, 255, 0.02);
-      }
+      #tmee-widget-root { position: fixed; bottom: 20px; left: 20px; width: 400px; max-height: 85vh; background-color: #1e2026; border: 1px solid #374151; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); color: #f3f4f6; font-family: -apple-system, sans-serif; display: flex; flex-direction: column; overflow: hidden; z-index: 99999; }
+      .tmee-header { padding: 12px 16px; background-color: #111318; border-bottom: 1px solid #374151; display: flex; justify-content: space-between; align-items: center; }
+      .tmee-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+      .tmee-header-controls { display: flex; align-items: center; gap: 8px; }
+      .tmee-btn-icon { background: transparent; border: none; color: #9ca3af; cursor: pointer; font-size: 14px; padding: 0 4px; transition: color 0.2s; }
+      .tmee-btn-icon:hover { color: #f3f4f6; }
+      .tmee-status-badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 500; background-color: #374151; color: #9ca3af; }
+      .tmee-status-badge.pending { background-color: rgba(245,158,11,0.2); color: #fbbf24; }
+      .tmee-status-badge.success { background-color: rgba(16,185,129,0.2); color: #34d399; }
+      .tmee-status-badge.error { background-color: rgba(239,68,68,0.2); color: #f87171; }
+      .tmee-body { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; transition: all 0.3s ease; }
+      .tmee-dropzone { border: 2px dashed #4b5563; border-radius: 8px; padding: 20px 16px; text-align: center; cursor: pointer; background-color: rgba(255,255,255,0.02); transition: all 0.2s; }
+      .tmee-dropzone:hover, .tmee-dropzone.dragover { border-color: #10b981; background-color: rgba(16,185,129,0.05); }
+      .tmee-dropzone-btn { background-color: #374151; color: #f3f4f6; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; margin-top: 8px; }
+      .tmee-result-container { display: none; flex-direction: column; gap: 12px; border-top: 1px solid #374151; padding-top: 12px; }
+      .tmee-meta-info { font-size: 12px; background-color: rgba(255,255,255,0.03); border: 1px solid #374151; border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; }
+      .tmee-sql-box { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+      .tmee-textarea { background: #111318; color: #10b981; border: 1px solid #374151; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 12px; resize: vertical; min-height: 70px; width: 100%; box-sizing: border-box;}
+      .tmee-textarea:focus { outline: none; border-color: #10b981; }
+      .tmee-btn-primary { background-color: #10b981; color: #111318; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: bold; cursor: pointer; transition: background 0.2s; width: 100%; }
+      .tmee-btn-primary:hover { background-color: #059669; }
+      .tmee-btn-inject { background-color: #3b82f6; color: #ffffff; width: auto; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px;}
+      .tmee-btn-inject:hover { background-color: #2563eb; }
+      .tmee-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+      .tmee-table-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #9ca3af; }
+      .tmee-table-wrapper { max-height: 200px; overflow: auto; border: 1px solid #374151; border-radius: 6px; background-color: #111318; }
+      .tmee-table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
+      .tmee-table th { background-color: #1f2937; color: #f3f4f6; padding: 6px 8px; border-bottom: 1px solid #374151; position: sticky; top: 0; }
+      .tmee-table td { padding: 6px 8px; border-bottom: 1px solid #2d3748; color: #d1d5db; white-space: nowrap; }
     `;
     document.head.appendChild(styleEl);
 
-    // Crear Estructura HTML del Widget
     const rootEl = document.createElement("div");
     rootEl.id = "tmee-widget-root";
     rootEl.innerHTML = `
       <div class="tmee-header">
-        <div class="tmee-title">
-          <span class="tmee-title-icon">📊</span> TM Excel Engine v1.0
+        <div class="tmee-title"><span style="color:#10b981">📊</span> TM Excel Engine v1.0</div>
+        <div class="tmee-header-controls">
+          <span id="tmee-status" class="tmee-status-badge">Iniciando...</span>
+          <button id="tmee-btn-toggle" class="tmee-btn-icon" title="Minimizar/Maximizar">➖</button>
         </div>
-        <span id="tmee-status" class="tmee-status-badge">Inicializando...</span>
       </div>
-      <div class="tmee-body">
+      <div class="tmee-body" id="tmee-body">
         <div id="tmee-dropzone" class="tmee-dropzone">
-          <div class="tmee-dropzone-icon">📥</div>
-          <div class="tmee-dropzone-text">Arrastra y suelta tu archivo aquí (.csv, .parquet, .xlsx)</div>
-          <span style="font-size: 10px; color: #6b7280;">o también</span>
+          <div style="font-size:24px; margin-bottom:4px">📥</div>
+          <div style="font-size:12px; color:#9ca3af">Arrastra tu archivo (.csv, .parquet, .xlsx)</div>
           <button id="tmee-select-btn" class="tmee-dropzone-btn">Seleccionar Archivo</button>
-          <input type="file" id="tmee-file-input" accept=".csv,.parquet,.xlsx,.xls" style="display: none;" />
+          <input type="file" id="tmee-file-input" accept=".csv,.parquet,.xlsx,.xls" style="display:none;" />
         </div>
         
-        <!-- Contenedor del resultado de carga -->
         <div id="tmee-result" class="tmee-result-container">
           <div class="tmee-meta-info">
-            <div class="tmee-meta-row">
-              <span class="tmee-meta-label">Tabla SQL:</span>
-              <span id="tmee-meta-table" class="tmee-meta-value">-</span>
-            </div>
-            <div class="tmee-meta-row">
-              <span class="tmee-meta-label">Registros:</span>
-              <span id="tmee-meta-rows" class="tmee-meta-value">-</span>
-            </div>
-            <div class="tmee-meta-row">
-              <span class="tmee-meta-label">Columnas:</span>
-              <span id="tmee-meta-cols" class="tmee-meta-value">-</span>
-            </div>
+            <span>Tabla: <strong style="color:#10b981" id="tmee-meta-table">-</strong></span>
+            <span>Registros: <strong style="color:#10b981" id="tmee-meta-rows">-</strong></span>
+          </div>
+          
+          <!-- Consola SQL -->
+          <div class="tmee-sql-box">
+            <div class="tmee-table-title">Consola SQL</div>
+            <textarea id="tmee-sql-input" class="tmee-textarea" spellcheck="false"></textarea>
+            <button id="tmee-btn-run-sql" class="tmee-btn-primary">▶ Ejecutar Consulta</button>
           </div>
 
-          <!-- Tabla Esquema -->
-          <div>
-            <div class="tmee-table-title">Esquema de Columnas</div>
-            <div class="tmee-table-wrapper">
-              <table id="tmee-schema-table" class="tmee-table">
-                <thead>
-                  <tr>
-                    <th>Columna</th>
-                    <th>Tipo de Dato</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
+          <!-- Resultados SQL -->
+          <div style="margin-top: 8px;">
+            <div class="tmee-results-header">
+              <div class="tmee-table-title" id="tmee-sql-results-title">Resultados</div>
+              <button id="tmee-btn-inject" class="tmee-btn-primary tmee-btn-inject">💬 Enviar a TM</button>
             </div>
-          </div>
-
-          <!-- Tabla Vista Previa -->
-          <div>
-            <div class="tmee-table-title">Previsualización de Datos (Primeras 5 filas)</div>
             <div class="tmee-table-wrapper">
-              <table id="tmee-preview-table" class="tmee-table">
-                <thead>
-                  <tr id="tmee-preview-headers"></tr>
-                </thead>
-                <tbody id="tmee-preview-body"></tbody>
+              <table class="tmee-table">
+                <thead id="tmee-sql-headers"></thead>
+                <tbody id="tmee-sql-body"></tbody>
               </table>
             </div>
           </div>
@@ -345,45 +143,41 @@
       </div>
     `;
     document.body.appendChild(rootEl);
-
-    // Registrar Eventos de la UI
     setupEvents();
   }
 
-  // --- 3. Lógica de Eventos y Arrastre de Archivos ---
+  // --- 3. Lógica de Eventos ---
   function setupEvents() {
     const dropzone = document.getElementById("tmee-dropzone");
     const fileInput = document.getElementById("tmee-file-input");
-    const selectBtn = document.getElementById("tmee-select-btn");
-
-    // Botón para seleccionar archivo de forma tradicional
-    selectBtn.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", (e) => {
-      if (e.target.files && e.target.files[0]) {
-        procesarArchivo(e.target.files[0]);
+    const bodyEl = document.getElementById("tmee-body");
+    const toggleBtn = document.getElementById("tmee-btn-toggle");
+    
+    // Controles de ventana
+    toggleBtn.addEventListener("click", () => {
+      if (bodyEl.style.display === "none") {
+        bodyEl.style.display = "flex";
+        toggleBtn.textContent = "➖";
+      } else {
+        bodyEl.style.display = "none";
+        toggleBtn.textContent = "➕";
       }
     });
 
-    // Eventos Drag & Drop de Archivos
-    dropzone.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      dropzone.classList.add("dragover");
-    });
-
-    dropzone.addEventListener("dragleave", () => {
-      dropzone.classList.remove("dragover");
-    });
-
+    document.getElementById("tmee-select-btn").addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", (e) => e.target.files[0] && procesarArchivo(e.target.files[0]));
+    
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
     dropzone.addEventListener("drop", (e) => {
-      e.preventDefault();
-      dropzone.classList.remove("dragover");
-      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-        procesarArchivo(e.dataTransfer.files[0]);
-      }
+      e.preventDefault(); dropzone.classList.remove("dragover");
+      if (e.dataTransfer.files[0]) procesarArchivo(e.dataTransfer.files[0]);
     });
+
+    document.getElementById("tmee-btn-run-sql").addEventListener("click", ejecutarSQL);
+    document.getElementById("tmee-btn-inject").addEventListener("click", inyectarEnChat);
   }
 
-  // Actualizar el texto y el color del badge de estado
   function updateStatus(text, statusClass = "") {
     const statusEl = document.getElementById("tmee-status");
     if (!statusEl) return;
@@ -391,156 +185,160 @@
     statusEl.className = "tmee-status-badge " + statusClass;
   }
 
-  // --- 4. Lógica de Lectura e Invocación al Worker ---
+  // --- 4. Carga de Archivos ---
   function procesarArchivo(file) {
     const extension = file.name.split('.').pop().toLowerCase();
-    const tableName = "excel_data"; // Tabla principal del motor por convención
-
-    updateStatus("Leyendo archivo...", "pending");
-    ocultarResultado();
-
+    const tableName = "excel_data";
+    document.getElementById("tmee-result").style.display = "none";
+    updateStatus("Cargando...", "pending");
+    
     const reader = new FileReader();
-
+    
     if (extension === "csv") {
       reader.onload = async (e) => {
         try {
-          const csvText = e.target.result;
-          updateStatus("Cargando CSV...", "pending");
-          const result = await sendRequest("loadCSV", { csvData: csvText, tableName }, 120000);
+          const result = await sendRequest("loadCSV", { csvData: e.target.result, tableName }, 120000);
           renderizarResultado(result);
           updateStatus("CSV Cargado", "success");
-        } catch (err) {
-          updateStatus("Error CSV: " + err.message, "error");
-        }
+        } catch (err) { updateStatus("Error CSV", "error"); }
       };
-      reader.onerror = () => updateStatus("Error al leer CSV", "error");
       reader.readAsText(file);
-
-    } else if (extension === "parquet") {
+    } else if (["parquet", "xlsx", "xls"].includes(extension)) {
       reader.onload = async (e) => {
         try {
-          const arrayBuffer = e.target.result;
-          updateStatus("Cargando Parquet...", "pending");
-          // Transferimos el ArrayBuffer para optimizar memoria
-          const result = await sendRequest(
-            "loadParquet",
-            { parquetData: arrayBuffer, tableName },
-            120000,
-            [arrayBuffer]
-          );
+          const typeMap = { "parquet": "loadParquet", "xlsx": "loadExcel", "xls": "loadExcel" };
+          const payload = extension === "parquet" ? { parquetData: e.target.result, tableName } : { excelBuffer: e.target.result, tableName };
+          const result = await sendRequest(typeMap[extension], payload, 120000, [e.target.result]);
           renderizarResultado(result);
-          updateStatus("Parquet Cargado", "success");
-        } catch (err) {
-          updateStatus("Error Parquet: " + err.message, "error");
-        }
+          updateStatus("Archivo Cargado", "success");
+        } catch (err) { updateStatus("Error de archivo", "error"); }
       };
-      reader.onerror = () => updateStatus("Error al leer Parquet", "error");
       reader.readAsArrayBuffer(file);
-
-    } else if (extension === "xlsx" || extension === "xls") {
-      reader.onload = async (e) => {
-        try {
-          const arrayBuffer = e.target.result;
-          updateStatus("Cargando Excel...", "pending");
-          // Transferimos el ArrayBuffer para optimizar memoria
-          const result = await sendRequest(
-            "loadExcel",
-            { excelBuffer: arrayBuffer, tableName },
-            120000,
-            [arrayBuffer]
-          );
-          renderizarResultado(result);
-          updateStatus("Excel Cargado", "success");
-        } catch (err) {
-          updateStatus("Error Excel: " + err.message, "error");
-        }
-      };
-      reader.onerror = () => updateStatus("Error al leer Excel", "error");
-      reader.readAsArrayBuffer(file);
-
-    } else {
-      updateStatus("Formato no soportado", "error");
-      alert("Formato de archivo no soportado. Debe ser .csv, .parquet, .xlsx o .xls");
     }
   }
 
-  // Ocultar paneles de previsualización al cargar un archivo nuevo
-  function ocultarResultado() {
-    document.getElementById("tmee-result").style.display = "none";
-  }
-
-  // --- 5. Renderizado de Esquema y Preview en la UI ---
   function renderizarResultado(result) {
-    const resultContainer = document.getElementById("tmee-result");
-    resultContainer.style.display = "flex";
-
-    // Meta Info
+    document.getElementById("tmee-result").style.display = "flex";
     document.getElementById("tmee-meta-table").textContent = result.tabla;
     document.getElementById("tmee-meta-rows").textContent = Number(result.registros).toLocaleString();
-    document.getElementById("tmee-meta-cols").textContent = result.columnas.length;
+    
+    const sqlInput = document.getElementById("tmee-sql-input");
+    sqlInput.value = `SELECT * FROM ${result.tabla} LIMIT 10;`;
+    ejecutarSQL();
+  }
 
-    // Tabla de Esquema (Nombre columna y tipo de dato)
-    const schemaBody = document.querySelector("#tmee-schema-table tbody");
-    schemaBody.innerHTML = "";
-    if (result.esquema && Array.isArray(result.esquema)) {
-      result.esquema.forEach((col) => {
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td><strong>${escapeHtml(col.column_name)}</strong></td>
-          <td><code style="background:#1f2937;padding:2px 4px;border-radius:4px;color:#f43f5e;">${escapeHtml(col.data_type)}</code></td>
-        `;
-        schemaBody.appendChild(row);
-      });
-    }
+  // --- 5. Motor SQL Dinámico ---
+  async function ejecutarSQL() {
+    const query = document.getElementById("tmee-sql-input").value;
+    if (!query.trim()) return;
 
-    // Tabla de Vista Previa (Máximo primeros 5 registros para no saturar el widget)
-    const previewHeaders = document.getElementById("tmee-preview-headers");
-    const previewBody = document.getElementById("tmee-preview-body");
-    previewHeaders.innerHTML = "";
-    previewBody.innerHTML = "";
-
-    if (result.columnas && Array.isArray(result.columnas) && result.preview && Array.isArray(result.preview)) {
-      // 1. Cabeceras
-      result.columnas.forEach((col) => {
-        const th = document.createElement("th");
-        th.textContent = col;
-        previewHeaders.appendChild(th);
-      });
-
-      // 2. Filas (Tomamos máximo 5 para la visualización del widget compacto)
-      const rowsToShow = result.preview.slice(0, 5);
-      rowsToShow.forEach((rowObj) => {
-        const tr = document.createElement("tr");
-        result.columnas.forEach((col) => {
-          const td = document.createElement("td");
-          const val = rowObj[col];
-          td.textContent = val !== null && val !== undefined ? String(val) : "";
-          tr.appendChild(td);
-        });
-        previewBody.appendChild(tr);
-      });
+    try {
+      updateStatus("Ejecutando SQL...", "pending");
+      const rows = await sendRequest("executeQuery", { sql: query }, 60000);
+      ultimosResultados = rows; // Guardar para la inyección
+      renderizarTablaSQL(rows);
+      updateStatus("Consulta OK", "success");
+    } catch (err) {
+      updateStatus("Error SQL", "error");
+      ultimosResultados = [];
+      alert("Error en la consulta SQL:\n" + err.message);
     }
   }
 
-  // Función de escape básica para seguridad HTML
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
+  function renderizarTablaSQL(rows) {
+    const headersEl = document.getElementById("tmee-sql-headers");
+    const bodyEl = document.getElementById("tmee-sql-body");
+    const titleEl = document.getElementById("tmee-sql-results-title");
+    
+    headersEl.innerHTML = "";
+    bodyEl.innerHTML = "";
 
-  // --- 6. Inicialización Automática al cargar el Script ---
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      injectWidget();
-      initWorker();
+    if (!rows || rows.length === 0) {
+      titleEl.textContent = "Resultados (0 filas)";
+      headersEl.innerHTML = "<tr><th style='text-align:center; color:#9ca3af'>Sin resultados</th></tr>";
+      return;
+    }
+
+    const displayRows = rows.slice(0, 100);
+    titleEl.textContent = `Resultados (${displayRows.length}${rows.length > 100 ? '+' : ''} filas)`;
+    
+    const columns = Object.keys(rows[0]);
+    const trHead = document.createElement("tr");
+    columns.forEach(col => {
+      const th = document.createElement("th");
+      th.textContent = col;
+      trHead.appendChild(th);
     });
-  } else {
-    injectWidget();
-    initWorker();
+    headersEl.appendChild(trHead);
+
+    displayRows.forEach(row => {
+      const tr = document.createElement("tr");
+      columns.forEach(col => {
+        const td = document.createElement("td");
+        const val = row[col];
+        td.textContent = val !== null && val !== undefined ? String(val) : "";
+        tr.appendChild(td);
+      });
+      bodyEl.appendChild(tr);
+    });
   }
 
+  // --- 6. Inyección a TypingMind ---
+  function inyectarEnChat() {
+    if (!ultimosResultados || ultimosResultados.length === 0) {
+      alert("No hay datos para inyectar. Ejecuta una consulta primero.");
+      return;
+    }
+
+    // Formatear a Markdown (máximo 50 filas)
+    const limit = Math.min(ultimosResultados.length, 50);
+    const rows = ultimosResultados.slice(0, limit);
+    const columns = Object.keys(rows[0]);
+    
+    let md = `*Resultados extraídos de la tabla local (${limit} filas):*\n\n`;
+    md += "| " + columns.join(" | ") + " |\n";
+    md += "| " + columns.map(() => "---").join(" | ") + " |\n";
+    
+    rows.forEach(row => {
+      md += "| " + columns.map(col => {
+        let val = row[col];
+        if (val === null || val === undefined) return "";
+        return String(val).replace(/\|/g, "-").replace(/\n/g, " ");
+      }).join(" | ") + " |\n";
+    });
+
+    // Buscar el input nativo de TypingMind
+    const chatInput = document.querySelector('textarea[data-testid="chat-input"]') || 
+                      document.querySelector('textarea[placeholder*="Type"]') || 
+                      document.querySelector('[contenteditable="true"]');
+
+    if (chatInput) {
+      if (chatInput.tagName === 'TEXTAREA') {
+        chatInput.value += (chatInput.value ? "\n\n" : "") + md;
+      } else {
+        chatInput.textContent += (chatInput.textContent ? "\n\n" : "") + md;
+      }
+      
+      // Despachar evento para que React actualice el estado del botón de envío
+      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+      
+      // Minimizar el widget automáticamente para ver el chat
+      document.getElementById("tmee-body").style.display = "none";
+      document.getElementById("tmee-btn-toggle").textContent = "➕";
+    } else {
+      // Fallback si el DOM de TM cambia: Copiar al portapapeles
+      navigator.clipboard.writeText(md).then(() => {
+        alert("Tabla copiada al portapapeles. Pégala en el chat.");
+      }).catch(() => {
+        alert("No se encontró el chat. Imprimiendo en consola.");
+        console.log(md);
+      });
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => { injectWidget(); initWorker(); });
+  } else {
+    injectWidget(); initWorker();
+  }
 })();
