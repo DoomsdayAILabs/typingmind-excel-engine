@@ -5,7 +5,7 @@
 (function () {
   "use strict";
 
-  const WORKER_PATH = "./duckdb-worker.js";
+  const WORKER_PATH = "https://doomsdayailabs.github.io/typingmind-excel-engine/duckdb-worker.js";
   let worker = null;
   const pending = new Map();
   let nextRequestId = 1;
