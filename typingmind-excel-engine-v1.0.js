@@ -7,15 +7,54 @@
 
   const WORKER_PATH = "https://doomsdayailabs.github.io/typingmind-excel-engine/duckdb-worker.js";
   let worker = null;
+  let workerObjectUrl = null; // URL blob temporal del worker descargado
   const pending = new Map();
   let nextRequestId = 1;
   let ultimosResultados = []; // Almacena la última consulta para inyectarla
 
   // --- 1. Inicialización del Web Worker ---
-  function initWorker() {
+  // El worker vive en GitHub Pages (origen distinto al de TypingMind): instanciarlo
+  // directamente con new Worker(WORKER_PATH) lanza SecurityError por Same-Origin Policy.
+  // Solución: descargar el código con fetch (GitHub Pages responde con
+  // Access-Control-Allow-Origin: *), envolverlo en un Blob y crear el Worker desde
+  // una URL blob, que ya pertenece al origen de la página.
+  async function initWorker() {
     try {
       updateStatus("Inicializando Web Worker...", "pending");
-      worker = new Worker(WORKER_PATH);
+
+      // a) Descarga remota del código fuente del worker.
+      const response = await fetch(WORKER_PATH);
+
+      // b) Validación de la respuesta HTTP.
+      if (!response.ok) {
+        throw new Error(`No se pudo descargar el worker: HTTP ${response.status} ${response.statusText} (${WORKER_PATH})`);
+      }
+
+      // c) Código fuente del worker como texto.
+      const workerCode = await response.text();
+
+      if (!workerCode.trim()) {
+        throw new Error("El worker descargado está vacío");
+      }
+
+      // d) Blob con el código descargado.
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+
+      // e) URL temporal same-origin para el Worker.
+      const workerUrl = URL.createObjectURL(blob);
+      workerObjectUrl = workerUrl;
+
+      // f) Instanciación local del worker desde la URL blob.
+      worker = new Worker(workerUrl);
+
+      // La URL blob se libera en cuanto el worker responde por primera vez.
+      worker.addEventListener("message", function liberarWorkerUrl() {
+        worker.removeEventListener("message", liberarWorkerUrl);
+        if (workerObjectUrl) {
+          URL.revokeObjectURL(workerObjectUrl);
+          workerObjectUrl = null;
+        }
+      }, { once: true });
 
       worker.onmessage = (event) => {
         const { requestId, success, data, error } = event.data || {};
@@ -39,7 +78,7 @@
         .catch((err) => updateStatus("Fallo al iniciar DuckDB: " + err.message, "error"));
 
     } catch (e) {
-      updateStatus("Error de inicialización", "error");
+      updateStatus("Error de inicialización: " + (e?.message || String(e)), "error");
     }
   }
 
