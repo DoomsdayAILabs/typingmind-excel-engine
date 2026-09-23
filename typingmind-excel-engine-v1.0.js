@@ -1,11 +1,12 @@
 /**
- * TypingMind Excel Engine — v1.0.js (Fase Final: Plugin Autónomo + Exportar CSV)
+ * TypingMind Excel Engine — v1.0.js (Fase 3B: Minimizar/Maximizar + Inyección de Contexto a la IA)
  * Script principal de inyección del Widget visual e integración con DuckDB-WASM Worker.
  */
 (function () {
   "use strict";
 
   const WORKER_PATH = "https://doomsdayailabs.github.io/typingmind-excel-engine/duckdb-worker.js";
+  const MAX_FILAS_INYECCION = 50;
   let worker = null;
   let workerObjectUrl = null;
   const pending = new Map();
@@ -16,11 +17,11 @@
   async function initWorker() {
     try {
       updateStatus("Inicializando Worker...", "pending");
-      
+
       const response = await fetch(WORKER_PATH);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const workerCode = await response.text();
-      
+
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       workerObjectUrl = URL.createObjectURL(blob);
       worker = new Worker(workerObjectUrl);
@@ -76,12 +77,12 @@
       try {
         const sql = event.data.sql;
         if (!sql) throw new Error("No SQL query provided");
-        
+
         const rows = await sendRequest("executeQuery", { sql }, 60000);
         ultimosResultados = rows;
         renderizarTablaSQL(rows);
         updateStatus("Consulta IA OK", "success");
-        
+
         if (event.source && typeof event.source.postMessage === "function") {
           event.source.postMessage({ channel: "tm-excel-engine", requestId: event.data.requestId, success: true, data: rows }, "*");
         } else {
@@ -91,6 +92,7 @@
         }
       } catch (err) {
         updateStatus("Error SQL IA", "error");
+        ultimosResultados = [];
         if (event.source && typeof event.source.postMessage === "function") {
           event.source.postMessage({ channel: "tm-excel-engine", requestId: event.data.requestId, success: false, error: err.message }, "*");
         }
@@ -126,6 +128,7 @@
       .tmee-textarea:focus { outline: none; border-color: #10b981; }
       .tmee-btn-primary { background-color: #10b981; color: #111318; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: bold; cursor: pointer; transition: background 0.2s; width: 100%; }
       .tmee-btn-primary:hover { background-color: #059669; }
+      .tmee-btn-primary.tmee-btn-inject { width: auto; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
       .tmee-btn-action { background-color: #3b82f6; color: #ffffff; width: auto; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px; border: none; border-radius: 4px; cursor: pointer; }
       .tmee-btn-action:hover { background-color: #2563eb; }
       .tmee-btn-action.csv { background-color: #8b5cf6; }
@@ -174,7 +177,7 @@
               <div class="tmee-table-title" id="tmee-sql-results-title">Resultados</div>
               <div style="display:flex; gap:6px;">
                 <button id="tmee-btn-export" class="tmee-btn-action csv">⬇️ CSV</button>
-                <button id="tmee-btn-inject" class="tmee-btn-action">💬 Chat</button>
+                <button id="tmee-btn-inject" class="tmee-btn-primary tmee-btn-inject">💬 Enviar a TM</button>
               </div>
             </div>
             <div class="tmee-table-wrapper">
@@ -195,22 +198,14 @@
   function setupEvents() {
     const dropzone = document.getElementById("tmee-dropzone");
     const fileInput = document.getElementById("tmee-file-input");
-    const bodyEl = document.getElementById("tmee-body");
     const toggleBtn = document.getElementById("tmee-btn-toggle");
-    
-    toggleBtn.addEventListener("click", () => {
-      if (bodyEl.style.display === "none") {
-        bodyEl.style.display = "flex";
-        toggleBtn.textContent = "➖";
-      } else {
-        bodyEl.style.display = "none";
-        toggleBtn.textContent = "➕";
-      }
-    });
+
+    // Fase 3B: minimizar / maximizar el panel del widget
+    toggleBtn.addEventListener("click", () => setWidgetMinimizado(!estaMinimizado()));
 
     document.getElementById("tmee-select-btn").addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", (e) => e.target.files[0] && procesarArchivo(e.target.files[0]));
-    
+
     dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
     dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
     dropzone.addEventListener("drop", (e) => {
@@ -221,6 +216,22 @@
     document.getElementById("tmee-btn-run-sql").addEventListener("click", ejecutarSQL);
     document.getElementById("tmee-btn-inject").addEventListener("click", inyectarEnChat);
     document.getElementById("tmee-btn-export").addEventListener("click", exportarCSV);
+  }
+
+  // --- 3.1 Control de visibilidad (Minimizar / Maximizar) ---
+  function estaMinimizado() {
+    const bodyEl = document.getElementById("tmee-body");
+    return !bodyEl || bodyEl.style.display === "none";
+  }
+
+  function setWidgetMinimizado(minimizado) {
+    const bodyEl = document.getElementById("tmee-body");
+    const toggleBtn = document.getElementById("tmee-btn-toggle");
+    if (bodyEl) bodyEl.style.display = minimizado ? "none" : "flex";
+    if (toggleBtn) {
+      toggleBtn.textContent = minimizado ? "➕" : "➖";
+      toggleBtn.title = minimizado ? "Maximizar widget" : "Minimizar widget";
+    }
   }
 
   function updateStatus(text, statusClass = "") {
@@ -236,9 +247,9 @@
     const tableName = "excel_data";
     document.getElementById("tmee-result").style.display = "none";
     updateStatus("Cargando...", "pending");
-    
+
     const reader = new FileReader();
-    
+
     if (extension === "csv") {
       reader.onload = async (e) => {
         try {
@@ -266,7 +277,7 @@
     document.getElementById("tmee-result").style.display = "flex";
     document.getElementById("tmee-meta-table").textContent = result.tabla;
     document.getElementById("tmee-meta-rows").textContent = Number(result.registros).toLocaleString();
-    
+
     const sqlInput = document.getElementById("tmee-sql-input");
     sqlInput.value = `SELECT * FROM ${result.tabla} LIMIT 10;`;
     ejecutarSQL();
@@ -280,6 +291,7 @@
     try {
       updateStatus("Ejecutando SQL...", "pending");
       const rows = await sendRequest("executeQuery", { sql: query }, 60000);
+      // Fase 3B: se conservan los resultados para poder enviarlos al chat
       ultimosResultados = rows;
       renderizarTablaSQL(rows);
       updateStatus("Consulta OK", "success");
@@ -294,7 +306,7 @@
     const headersEl = document.getElementById("tmee-sql-headers");
     const bodyEl = document.getElementById("tmee-sql-body");
     const titleEl = document.getElementById("tmee-sql-results-title");
-    
+
     headersEl.innerHTML = "";
     bodyEl.innerHTML = "";
 
@@ -306,7 +318,7 @@
 
     const displayRows = rows.slice(0, 100);
     titleEl.textContent = `Resultados (${displayRows.length}${rows.length > 100 ? '+' : ''} filas)`;
-    
+
     const columns = Object.keys(rows[0]);
     const trHead = document.createElement("tr");
     columns.forEach(col => {
@@ -328,34 +340,101 @@
     });
   }
 
-  // --- 6. Acciones Extras (Inyección Manual y Exportación CSV) ---
-  function inyectarEnChat() {
-    if (!ultimosResultados || ultimosResultados.length === 0) return alert("No hay datos.");
-    const limit = Math.min(ultimosResultados.length, 50);
-    const rows = ultimosResultados.slice(0, limit);
-    const columns = Object.keys(rows[0]);
-    let md = `*Resultados extraídos de la tabla local (${limit} filas):*\n\n`;
-    md += "| " + columns.join(" | ") + " |\n";
-    md += "| " + columns.map(() => "---").join(" | ") + " |\n";
-    rows.forEach(row => {
-      md += "| " + columns.map(col => {
-        let val = row[col];
-        if (val === null || val === undefined) return "";
-        return String(val).replace(/\|/g, "-").replace(/\n/g, " ");
-      }).join(" | ") + " |\n";
+  // --- 6. Acciones Extras (Inyección de Contexto a la IA y Exportación CSV) ---
+
+  /**
+   * Escapa el contenido de una celda para que no rompa la sintaxis Markdown:
+   * barras invertidas, pipes (|) y saltos de línea.
+   */
+  function escaparCeldaMarkdown(valor) {
+    if (valor === null || valor === undefined) return "";
+    return String(valor)
+      .replace(/\\/g, "\\\\")
+      .replace(/\|/g, "\\|")
+      .replace(/\r\n|\r|\n/g, "<br>");
+  }
+
+  /**
+   * Convierte las filas en una tabla Markdown, limitando el número de filas
+   * para no saturar el contexto del LLM.
+   */
+  function construirTablaMarkdown(rows) {
+    const filas = rows.slice(0, MAX_FILAS_INYECCION);
+    const columnas = Object.keys(filas[0] || {});
+    if (columnas.length === 0) return "";
+
+    const total = rows.length;
+    const aviso = total > filas.length
+      ? ` — mostrando las primeras ${filas.length} de ${total} filas`
+      : "";
+
+    let md = `*Resultados del Excel Data Engine (${filas.length} fila(s)${aviso}):*\n\n`;
+    md += "| " + columnas.map(escaparCeldaMarkdown).join(" | ") + " |\n";
+    md += "| " + columnas.map(() => "---").join(" | ") + " |\n";
+    filas.forEach((fila) => {
+      md += "| " + columnas.map((col) => escaparCeldaMarkdown(fila[col])).join(" | ") + " |\n";
     });
 
-    const chatInput = document.querySelector('textarea[data-testid="chat-input"]') || 
-                      document.querySelector('textarea[placeholder*="Type"]') || 
-                      document.querySelector('[contenteditable="true"]');
+    if (total > filas.length) {
+      md += `\n_Se omitieron ${total - filas.length} filas adicionales para no saturar el contexto del modelo._\n`;
+    }
+    return md;
+  }
+
+  /** Localiza el input del chat de TypingMind (textarea o editor enriquecido). */
+  function buscarInputChat() {
+    return document.querySelector('textarea[data-testid="chat-input"]') ||
+           document.querySelector('textarea[placeholder*="Type"]') ||
+           document.querySelector('[contenteditable="true"]');
+  }
+
+  /** Fase 3B: envía los últimos resultados al chat de TypingMind como tabla Markdown. */
+  function inyectarEnChat() {
+    if (!ultimosResultados || ultimosResultados.length === 0) {
+      alert("No hay resultados que enviar.\n\nEjecuta primero una consulta SQL en la consola del widget.");
+      return;
+    }
+
+    const md = construirTablaMarkdown(ultimosResultados);
+    if (!md) {
+      alert("Los resultados no contienen columnas que se puedan formatear.");
+      return;
+    }
+
+    const chatInput = buscarInputChat();
+
     if (chatInput) {
-      if (chatInput.tagName === 'TEXTAREA') chatInput.value += (chatInput.value ? "\n\n" : "") + md;
-      else chatInput.textContent += (chatInput.textContent ? "\n\n" : "") + md;
-      chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-      document.getElementById("tmee-body").style.display = "none";
-      document.getElementById("tmee-btn-toggle").textContent = "➕";
+      const esCampoSimple = chatInput.tagName === "TEXTAREA" || chatInput.tagName === "INPUT";
+      const textoActual = esCampoSimple ? chatInput.value : chatInput.textContent;
+      const separador = textoActual ? "\n\n" : "";
+
+      if (esCampoSimple) chatInput.value = textoActual + separador + md;
+      else chatInput.textContent = textoActual + separador + md;
+
+      // Evento nativo para que React (TypingMind) sincronice su estado interno
+      chatInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+      try {
+        chatInput.focus();
+        if (typeof chatInput.setSelectionRange === "function") {
+          const fin = (chatInput.value || "").length;
+          chatInput.setSelectionRange(fin, fin);
+        }
+      } catch (_ignorado) {
+        // Algunos editores enriquecidos no permiten manipular la selección
+      }
+
+      setWidgetMinimizado(true);
+      updateStatus("Enviado al chat", "success");
+      return;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md)
+        .then(() => alert("No se encontró el input del chat de TypingMind.\n\nLa tabla Markdown se copió al portapapeles: pégala con Ctrl+V."))
+        .catch(() => alert("No se encontró el input del chat ni se pudo acceder al portapapeles.\n\nCopia manualmente:\n\n" + md));
     } else {
-      navigator.clipboard.writeText(md).then(() => alert("Copiado al portapapeles.")).catch(() => console.log(md));
+      alert("No se encontró el input del chat ni el portapapeles.\n\nCopia manualmente:\n\n" + md);
     }
   }
 

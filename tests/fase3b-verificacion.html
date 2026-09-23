@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Verificación Fase 3B</title>
+  <style>body { background: #111318; color: #f3f4f6; font-family: sans-serif; }</style>
+</head>
+<body>
+  <h1>Verificación Fase 3B (temporal)</h1>
+
+  <!-- Simulación del chat de TypingMind -->
+  <textarea data-testid="chat-input" placeholder="Type a message"></textarea>
+
+  <div id="verify-results"></div>
+
+  <script>
+    // --- Stubs previos a la carga del motor (Worker + fetch) ---
+    window.__alerts = [];
+    window.__mockRows = [];
+    window.__mockFail = false;
+
+    window.alert = function (msg) { window.__alerts.push(String(msg)); };
+
+    window.fetch = async function () {
+      return { ok: true, text: async () => "// worker mock (verificación Fase 3B)" };
+    };
+
+    window.Worker = class MockWorker {
+      constructor(url) { window.__workerUrl = String(url); }
+      postMessage(msg) {
+        const responder = (success, data) => setTimeout(() => {
+          if (this.onmessage) this.onmessage({ data: { requestId: msg.requestId, success, data } });
+        }, 5);
+        if (msg.type === "initDuckDB") responder(true, { ready: true });
+        else if (msg.type === "executeQuery") {
+          if (window.__mockFail) responder(false, undefined);
+          else responder(true, window.__mockRows);
+        }
+      }
+    };
+  </script>
+
+  <!-- Ejecutar: chrome --headless=new --dump-dom --virtual-time-budget=20000 "file:///<ruta-repo>/tests/fase3b-verificacion.html"
+       (el resultado se publica en document.title como JSON codificado) -->
+  <script src="../typingmind-excel-engine-v1.0.js"></script>
+
+  <script>
+    const resultados = { checks: [], logs: [] };
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+    const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Dataset: 60 filas; la primera incluye pipe, salto de línea y null
+    const MOCK = [];
+    for (let i = 0; i < 60; i++) {
+      MOCK.push({
+        id: i + 1,
+        nota: i === 0 ? "a|b" : "n" + i,
+        texto: i === 0 ? "line1\nline2" : "t" + i,
+        vacio: i === 0 ? null : i
+      });
+    }
+
+    async function puenteIA(rows, fallar, requestId) {
+      window.__mockRows = rows;
+      window.__mockFail = !!fallar;
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { channel: "tm-excel-engine", action: "execute_sql", sql: "SELECT * FROM excel_data", requestId: requestId }
+      }));
+      await esperar(150);
+    }
+
+    (async function run() {
+      await esperar(300);
+
+      // 1. UI inyectada
+      check("Widget inyectado", !!document.getElementById("tmee-widget-root"));
+      check("Botón toggle en .tmee-header-controls", !!document.querySelector(".tmee-header-controls #tmee-btn-toggle"));
+      const btnInject = document.getElementById("tmee-btn-inject");
+      check("Botón inyectar con clases correctas", btnInject.className === "tmee-btn-primary tmee-btn-inject", btnInject.className);
+      check("Texto del botón inyectar", btnInject.textContent.trim() === "💬 Enviar a TM", btnInject.textContent.trim());
+
+      // 2. Minimizar / Maximizar
+      const body = document.getElementById("tmee-body");
+      const toggle = document.getElementById("tmee-btn-toggle");
+      toggle.click(); await esperar(30);
+      check("Toggle minimiza (none + ➕)", body.style.display === "none" && toggle.textContent === "➕", body.style.display + "/" + toggle.textContent);
+      toggle.click(); await esperar(30);
+      check("Toggle maximiza (flex + ➖)", body.style.display === "flex" && toggle.textContent === "➖", body.style.display + "/" + toggle.textContent);
+
+      // 3. Puente IA deja resultados disponibles
+      await puenteIA(MOCK, false, 7);
+      check("Tabla SQL renderizada por el puente", document.querySelectorAll("#tmee-sql-body tr").length === 60,
+        document.querySelectorAll("#tmee-sql-body tr").length);
+
+      // 4. Inyección en el chat
+      const input = document.querySelector('textarea[data-testid="chat-input"]');
+      let eventosInput = 0;
+      input.addEventListener("input", () => eventosInput++);
+      btnInject.click();
+      await esperar(80);
+
+      const valor = input.value;
+      check("Inyecta cabecera Markdown", valor.includes("| id | nota | texto | vacio |"), valor.split("\n")[2]);
+      check("Inyecta separador Markdown", valor.includes("| --- | --- | --- | --- |"));
+      check("Escapa pipe (\\|)", valor.includes("a\\|b"));
+      check("Escapa salto de linea (<br>)", valor.includes("line1<br>line2"));
+      const lineasTabla = valor.split("\n").filter((l) => l.startsWith("|"));
+      const contarPipesReales = (l) => (l.replace(/\\\|/g, "").match(/\|/g) || []).length;
+      check("Ninguna fila rompe el Markdown (5 pipes sin escapar por linea)",
+        lineasTabla.every((l) => contarPipesReales(l) === 5),
+        lineasTabla.map(contarPipesReales).join(","));
+      check("Fila con pipe, salto de linea y null bien formateada",
+        lineasTabla[2] === "| 1 | a\\|b | line1<br>line2 |  |", lineasTabla[2]);
+      check("Fila normal bien formateada", lineasTabla[3] === "| 2 | n1 | t1 | 1 |", lineasTabla[3]);
+      const filasDatos = lineasTabla.length - 2;
+      check("Limita a 50 filas (de 60)", filasDatos === 50, filasDatos);
+      check("Avisa de filas omitidas", valor.includes("Se omitieron 10 filas"));
+      check("Dispara evento input (React)", eventosInput === 1, eventosInput);
+      check("Minimiza tras enviar", body.style.display === "none" && toggle.textContent === "➕", body.style.display + "/" + toggle.textContent);
+      check("Estado del widget actualizado", document.getElementById("tmee-status").textContent === "Enviado al chat",
+        document.getElementById("tmee-status").textContent);
+      // 5. Suma al texto existente sin borrar el contenido del usuario
+      input.value = "Mensaje previo del usuario";
+      btnInject.click();
+      await esperar(80);
+      check("Suma al texto existente", input.value.startsWith("Mensaje previo del usuario\n\n*Resultados"),
+        JSON.stringify(input.value.slice(0, 45)));
+
+      // 6. Sin resultados -> alerta pidiendo ejecutar consulta
+      await puenteIA([], true, 8);
+      window.__alerts.length = 0;
+      btnInject.click();
+      await esperar(30);
+      check("Alerta si no hay resultados",
+        window.__alerts.length === 1 && /Ejecuta primero una consulta SQL/.test(window.__alerts[0]),
+        window.__alerts[0]);
+
+      // 7. Sin input en el chat -> portapapeles
+      await puenteIA(MOCK.slice(0, 3), false, 9);
+      input.parentNode.removeChild(input);
+      let copiado = null;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: (t) => { copiado = t; return Promise.resolve(); } }
+      });
+      window.__alerts.length = 0;
+      btnInject.click();
+      await esperar(120);
+      check("Fallback a portapapeles", !!copiado && copiado.includes("| id | nota | texto | vacio |"),
+        copiado ? copiado.slice(0, 60) : "null");
+      check("Alerta de copiado", window.__alerts.length === 1 && /portapapeles/.test(window.__alerts[0]),
+        window.__alerts[0]);
+
+      // 8. Exportar CSV sigue funcionando con los resultados guardados
+      let descarga = null;
+      const createElOriginal = document.createElement.bind(document);
+      document.createElement = function (tag) {
+        const el = createElOriginal(tag);
+        if (tag === "a") { const clickOriginal = el.click.bind(el); el.click = () => { descarga = el.getAttribute("download"); }; }
+        return el;
+      };
+      document.getElementById("tmee-btn-export").click();
+      document.createElement = createElOriginal;
+      check("Exportar CSV intacto", descarga === "tmee_resultados.csv", descarga);
+
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados);
+      document.title = "RES:" + encodeURIComponent(JSON.stringify(resultados));
+
+    })();
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Verificación visual Fase 3B</title>
+  <style>
+    body { margin: 0; background: #0f1115; color: #e5e7eb; font-family: -apple-system, sans-serif; }
+    .chat { max-width: 780px; margin: 48px auto 0 auto; padding: 24px; background: #1a1c22; border: 1px solid #2d3748; border-radius: 12px; }
+    .chat h2 { margin: 0 0 6px 0; font-size: 18px; }
+    .chat p { margin: 0 0 16px 0; color: #9ca3af; font-size: 13px; }
+    textarea { width: 100%; min-height: 96px; box-sizing: border-box; background: #111318; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="chat">
+    <h2>Simulación del chat de TypingMind</h2>
+    <p>Verificación visual Fase 3B: widget expandido, botón "Enviar a TM" y minimización.</p>
+    <textarea data-testid="chat-input" placeholder="Type a message"></textarea>
+  </div>
+
+  <script>
+    // Mocks: worker de DuckDB y fetch (sin red)
+    window.fetch = async function () { return { ok: true, text: async () => "// mock" }; };
+    window.Worker = class MockWorker {
+      postMessage(m) {
+        const r = (d) => setTimeout(() => this.onmessage && this.onmessage({ data: { requestId: m.requestId, success: true, data: d } }), 5);
+        if (m.type === "initDuckDB") r({ ready: true });
+        else if (m.type === "loadCSV") r({ tabla: "excel_data", registros: 12 });
+        else if (m.type === "executeQuery") r(window.__rows || []);
+      }
+    };
+    window.__rows = [];
+    for (let i = 1; i <= 12; i++) {
+      window.__rows.push({ id: i, producto: "Producto " + i, precio: (i * 10.5).toFixed(2), stock: i * 3 });
+    }
+  </script>
+
+  <!-- Ejecutar: chrome --headless=new --screenshot=shot.png --window-size=1100,780 "file:///<ruta-repo>/tests/fase3b-visual.html" -->
+  <script src="../typingmind-excel-engine-v1.0.js"></script>
+
+  <script>
+    // Simula la carga real de un CSV mediante el input del widget
+    function simularCargaCSV() {
+      var csv = "id,producto,precio,stock\n";
+      window.__rows = [];
+      for (var i = 1; i <= 12; i++) {
+        csv += i + ",Producto " + i + "," + (i * 10.5).toFixed(2) + "," + (i * 3) + "\n";
+        window.__rows.push({ id: i, producto: "Producto " + i, precio: (i * 10.5).toFixed(2), stock: i * 3 });
+      }
+      var file = new File([csv], "ventas.csv", { type: "text/csv" });
+      var input = document.getElementById("tmee-file-input");
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    setTimeout(function () {
+      simularCargaCSV();
+      if (location.hash === "#send") setTimeout(function () { document.getElementById("tmee-btn-inject").click(); }, 700);
+      if (location.hash === "#min") setTimeout(function () { document.getElementById("tmee-btn-toggle").click(); }, 700);
+    }, 250);
+  </script>
+</body>
+</html>
