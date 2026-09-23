@@ -1,68 +1,70 @@
-const CHANNEL = "tm-excel-engine";
-const DEFAULT_MAX_ROWS = 200;
-const HARD_MAX_ROWS = 500;
-const TIMEOUT_MS = 180000;
-
-function assertReadOnlySql(sql) {
-  const text = String(sql || "").trim();
-  if (!text) {
-    throw new Error("Falta el SQL. Usa action=query y envía una consulta SELECT o WITH.");
-  }
-  const stripped = text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--.*$/gm, " ").trim();
-  if (!/^(with|select|explain)\b/i.test(stripped)) {
-    throw new Error("Solo se permiten consultas de lectura (SELECT, WITH o EXPLAIN) contra excel_data.");
-  }
-  if (/\b(drop|alter|insert|update|delete|attach|copy|export|pragma\s+force|create\s+table|create\s+view)\b/i.test(stripped)) {
-    throw new Error("Esta herramienta es de solo lectura. No se permiten cambios a la tabla excel_data.");
-  }
-  return text;
-}
-
-function callEngine(payload) {
-  return new Promise((resolve, reject) => {
-    const requestId = `tm-excel-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const timer = setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      reject(new Error("El motor Excel no respondió a tiempo. ¿Están instaladas las Extensions v0.4.20 y el puente, y recargaste TypingMind?"));
-    }, TIMEOUT_MS);
-
-    function onMessage(event) {
-      const data = event.data;
-      if (!data || data.channel !== CHANNEL || data.requestId !== requestId) return;
-      window.removeEventListener("message", onMessage);
-      clearTimeout(timer);
-      if (data.error) {
-        reject(new Error(data.error));
-        return;
-      }
-      resolve(data.result);
-    }
-
-    window.addEventListener("message", onMessage);
-    window.parent.postMessage({
-      channel: CHANNEL,
-      requestId,
-      ...payload
-    }, "*");
-  });
-}
-
+/**
+ * TypingMind Plugin — query_excel_data (Excel Data Engine local · DuckDB-WASM)
+ *
+ * REQUISITO DE TYPINGMIND (docs oficiales, sección "JavaScript Code"):
+ * el código de implementación debe declarar en el NIVEL SUPERIOR una función con
+ * EXACTAMENTE el mismo nombre que el campo `name` del openaiSpec ("query_excel_data").
+ * Por eso el cuerpo blindado va envuelto en `async function query_excel_data(params) { ... }`.
+ * Nunca pegues sentencias `return` sueltas en el nivel superior: son un SyntaxError.
+ *
+ * Arquitectura: el plugin se ejecuta dentro de un iframe sandbox y no tiene acceso a
+ * DuckDB. Envía la consulta al motor (Extensión, ventana principal) con
+ * `window.parent.postMessage` y recibe las filas por el canal "tm-excel-engine".
+ */
 async function query_excel_data(params) {
-  const action = params?.action || "query";
-  const maxRows = Math.min(HARD_MAX_ROWS, Math.max(1, Number(params?.max_rows) || DEFAULT_MAX_ROWS));
+  return new Promise((resolve) => {
+    try {
+      const sql = params?.sql_query || params?.sql || params?.query;
+      if (!sql || typeof sql !== "string") {
+        return resolve("Error: Consulta SQL no válida o vacía. Asegúrate de generar una consulta SELECT.");
+      }
 
-  if (action === "schema") {
-    return callEngine({ action: "schema" });
-  }
+      const stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--.*$/gm, " ").trim();
+      if (/\b(drop|alter|insert|update|delete|attach|copy|export|create|pragma\s+force)\b/i.test(stripped)) {
+        return resolve("Error: Solo se permiten consultas de lectura (SELECT, WITH, EXPLAIN).");
+      }
 
-  if (action === "preview") {
-    return callEngine({ action: "preview", maxRows: 10 });
-  }
+      const reqId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+      const timer = setTimeout(() => {
+        resolve("Error: Timeout. El motor local no respondió. Verifica que la extensión esté cargada y un archivo Excel esté procesado.");
+      }, 30000);
 
-  if (action === "query") {
-    const sql = assertReadOnlySql(params?.sql);
-    return callEngine({ action: "query", sql, maxRows });
-  }
+      function onMessage(event) {
+        if (event.data && event.data.channel === "tm-excel-engine" && event.data.requestId === reqId) {
+          window.removeEventListener("message", onMessage);
+          clearTimeout(timer);
 
-  throw new Error("action debe ser schema, preview o query.");
+          if (!event.data.success) {
+            return resolve("Error SQL del motor local: " + event.data.error);
+          }
+
+          const rows = event.data.data;
+          if (!Array.isArray(rows)) return resolve("Error interno: Datos no procesables.");
+          if (rows.length === 0) return resolve("Consulta ejecutada con éxito (0 resultados).");
+
+          const limit = Math.min(rows.length, 50);
+          const displayRows = rows.slice(0, limit);
+          const columns = Object.keys(displayRows[0]);
+
+          let md = `Resultado (${limit} de ${rows.length} filas):\n\n`;
+          md += "| " + columns.join(" | ") + " |\n";
+          md += "| " + columns.map(() => "---").join(" | ") + " |\n";
+
+          displayRows.forEach(row => {
+            md += "| " + columns.map(col => {
+              let val = row[col];
+              return val !== null && val !== undefined ? String(val).replace(/\|/g, "\\|").replace(/\n/g, " ") : "";
+            }).join(" | ") + " |\n";
+          });
+
+          resolve(md);
+        }
+      }
+
+      window.addEventListener("message", onMessage);
+      window.parent.postMessage({ channel: "tm-excel-engine", action: "execute_sql", sql: sql, requestId: reqId }, "*");
+    } catch (e) {
+      resolve("Error crítico en la ejecución del plugin: " + (e.message || String(e)));
+    }
+  });
 }

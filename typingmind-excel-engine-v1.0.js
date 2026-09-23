@@ -1,5 +1,5 @@
 /**
- * TypingMind Excel Engine — v1.0.js
+ * TypingMind Excel Engine — v1.0.js (Fase Final: Plugin Autónomo + Exportar CSV)
  * Script principal de inyección del Widget visual e integración con DuckDB-WASM Worker.
  */
 (function () {
@@ -7,54 +7,23 @@
 
   const WORKER_PATH = "https://doomsdayailabs.github.io/typingmind-excel-engine/duckdb-worker.js";
   let worker = null;
-  let workerObjectUrl = null; // URL blob temporal del worker descargado
+  let workerObjectUrl = null;
   const pending = new Map();
   let nextRequestId = 1;
-  let ultimosResultados = []; // Almacena la última consulta para inyectarla
+  let ultimosResultados = [];
 
-  // --- 1. Inicialización del Web Worker ---
-  // El worker vive en GitHub Pages (origen distinto al de TypingMind): instanciarlo
-  // directamente con new Worker(WORKER_PATH) lanza SecurityError por Same-Origin Policy.
-  // Solución: descargar el código con fetch (GitHub Pages responde con
-  // Access-Control-Allow-Origin: *), envolverlo en un Blob y crear el Worker desde
-  // una URL blob, que ya pertenece al origen de la página.
+  // --- 1. Inicialización del Web Worker con Proxy Blob (CORS Bypass) ---
   async function initWorker() {
     try {
-      updateStatus("Inicializando Web Worker...", "pending");
-
-      // a) Descarga remota del código fuente del worker.
+      updateStatus("Inicializando Worker...", "pending");
+      
       const response = await fetch(WORKER_PATH);
-
-      // b) Validación de la respuesta HTTP.
-      if (!response.ok) {
-        throw new Error(`No se pudo descargar el worker: HTTP ${response.status} ${response.statusText} (${WORKER_PATH})`);
-      }
-
-      // c) Código fuente del worker como texto.
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const workerCode = await response.text();
-
-      if (!workerCode.trim()) {
-        throw new Error("El worker descargado está vacío");
-      }
-
-      // d) Blob con el código descargado.
+      
       const blob = new Blob([workerCode], { type: 'application/javascript' });
-
-      // e) URL temporal same-origin para el Worker.
-      const workerUrl = URL.createObjectURL(blob);
-      workerObjectUrl = workerUrl;
-
-      // f) Instanciación local del worker desde la URL blob.
-      worker = new Worker(workerUrl);
-
-      // La URL blob se libera en cuanto el worker responde por primera vez.
-      worker.addEventListener("message", function liberarWorkerUrl() {
-        worker.removeEventListener("message", liberarWorkerUrl);
-        if (workerObjectUrl) {
-          URL.revokeObjectURL(workerObjectUrl);
-          workerObjectUrl = null;
-        }
-      }, { once: true });
+      workerObjectUrl = URL.createObjectURL(blob);
+      worker = new Worker(workerObjectUrl);
 
       worker.onmessage = (event) => {
         const { requestId, success, data, error } = event.data || {};
@@ -68,17 +37,23 @@
         else pendingItem.reject(new Error(error));
       };
 
-      worker.onerror = (event) => {
-        updateStatus("Error en el Web Worker", "error");
+      worker.onerror = () => {
+        updateStatus("Error en Worker", "error");
         pending.clear();
       };
 
       sendRequest("initDuckDB", {}, 120000)
-        .then(() => updateStatus("Motor DuckDB Listo", "success"))
-        .catch((err) => updateStatus("Fallo al iniciar DuckDB: " + err.message, "error"));
+        .then(() => {
+          updateStatus("Motor Listo", "success");
+          if (workerObjectUrl) {
+            URL.revokeObjectURL(workerObjectUrl);
+            workerObjectUrl = null;
+          }
+        })
+        .catch((err) => updateStatus("Fallo al iniciar: " + err.message, "error"));
 
     } catch (e) {
-      updateStatus("Error de inicialización: " + (e?.message || String(e)), "error");
+      updateStatus("Error de inicialización: " + e.message, "error");
     }
   }
 
@@ -87,13 +62,41 @@
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId);
-        reject(new Error(`Timeout de ${timeoutMs}ms para (${type})`));
+        reject(new Error(`Timeout de ${timeoutMs}ms`));
       }, timeoutMs);
 
-      pending.set(requestId, { resolve, reject, timer, type });
+      pending.set(requestId, { resolve, reject, timer });
       worker.postMessage({ type, requestId, ...payload }, transferables);
     });
   }
+
+  // --- 1.1 Puente de Comunicación para Plugins (TypingMind AI) ---
+  window.addEventListener("message", async (event) => {
+    if (event.data && event.data.channel === "tm-excel-engine" && event.data.action === "execute_sql") {
+      try {
+        const sql = event.data.sql;
+        if (!sql) throw new Error("No SQL query provided");
+        
+        const rows = await sendRequest("executeQuery", { sql }, 60000);
+        ultimosResultados = rows;
+        renderizarTablaSQL(rows);
+        updateStatus("Consulta IA OK", "success");
+        
+        if (event.source && typeof event.source.postMessage === "function") {
+          event.source.postMessage({ channel: "tm-excel-engine", requestId: event.data.requestId, success: true, data: rows }, "*");
+        } else {
+          document.querySelectorAll('iframe').forEach(iframe => {
+            iframe.contentWindow.postMessage({ channel: "tm-excel-engine", requestId: event.data.requestId, success: true, data: rows }, "*");
+          });
+        }
+      } catch (err) {
+        updateStatus("Error SQL IA", "error");
+        if (event.source && typeof event.source.postMessage === "function") {
+          event.source.postMessage({ channel: "tm-excel-engine", requestId: event.data.requestId, success: false, error: err.message }, "*");
+        }
+      }
+    }
+  });
 
   // --- 2. Inyección de la UI del Widget ---
   function injectWidget() {
@@ -123,9 +126,11 @@
       .tmee-textarea:focus { outline: none; border-color: #10b981; }
       .tmee-btn-primary { background-color: #10b981; color: #111318; border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; font-weight: bold; cursor: pointer; transition: background 0.2s; width: 100%; }
       .tmee-btn-primary:hover { background-color: #059669; }
-      .tmee-btn-inject { background-color: #3b82f6; color: #ffffff; width: auto; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px;}
-      .tmee-btn-inject:hover { background-color: #2563eb; }
-      .tmee-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+      .tmee-btn-action { background-color: #3b82f6; color: #ffffff; width: auto; padding: 4px 10px; font-size: 11px; display: flex; align-items: center; gap: 4px; border: none; border-radius: 4px; cursor: pointer; }
+      .tmee-btn-action:hover { background-color: #2563eb; }
+      .tmee-btn-action.csv { background-color: #8b5cf6; }
+      .tmee-btn-action.csv:hover { background-color: #7c3aed; }
+      .tmee-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; gap: 4px; }
       .tmee-table-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #9ca3af; }
       .tmee-table-wrapper { max-height: 200px; overflow: auto; border: 1px solid #374151; border-radius: 6px; background-color: #111318; }
       .tmee-table { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; }
@@ -158,18 +163,19 @@
             <span>Registros: <strong style="color:#10b981" id="tmee-meta-rows">-</strong></span>
           </div>
           
-          <!-- Consola SQL -->
           <div class="tmee-sql-box">
             <div class="tmee-table-title">Consola SQL</div>
             <textarea id="tmee-sql-input" class="tmee-textarea" spellcheck="false"></textarea>
             <button id="tmee-btn-run-sql" class="tmee-btn-primary">▶ Ejecutar Consulta</button>
           </div>
 
-          <!-- Resultados SQL -->
           <div style="margin-top: 8px;">
             <div class="tmee-results-header">
               <div class="tmee-table-title" id="tmee-sql-results-title">Resultados</div>
-              <button id="tmee-btn-inject" class="tmee-btn-primary tmee-btn-inject">💬 Enviar a TM</button>
+              <div style="display:flex; gap:6px;">
+                <button id="tmee-btn-export" class="tmee-btn-action csv">⬇️ CSV</button>
+                <button id="tmee-btn-inject" class="tmee-btn-action">💬 Chat</button>
+              </div>
             </div>
             <div class="tmee-table-wrapper">
               <table class="tmee-table">
@@ -192,7 +198,6 @@
     const bodyEl = document.getElementById("tmee-body");
     const toggleBtn = document.getElementById("tmee-btn-toggle");
     
-    // Controles de ventana
     toggleBtn.addEventListener("click", () => {
       if (bodyEl.style.display === "none") {
         bodyEl.style.display = "flex";
@@ -215,6 +220,7 @@
 
     document.getElementById("tmee-btn-run-sql").addEventListener("click", ejecutarSQL);
     document.getElementById("tmee-btn-inject").addEventListener("click", inyectarEnChat);
+    document.getElementById("tmee-btn-export").addEventListener("click", exportarCSV);
   }
 
   function updateStatus(text, statusClass = "") {
@@ -266,7 +272,7 @@
     ejecutarSQL();
   }
 
-  // --- 5. Motor SQL Dinámico ---
+  // --- 5. Motor SQL Dinámico Manual ---
   async function ejecutarSQL() {
     const query = document.getElementById("tmee-sql-input").value;
     if (!query.trim()) return;
@@ -274,7 +280,7 @@
     try {
       updateStatus("Ejecutando SQL...", "pending");
       const rows = await sendRequest("executeQuery", { sql: query }, 60000);
-      ultimosResultados = rows; // Guardar para la inyección
+      ultimosResultados = rows;
       renderizarTablaSQL(rows);
       updateStatus("Consulta OK", "success");
     } catch (err) {
@@ -322,22 +328,15 @@
     });
   }
 
-  // --- 6. Inyección a TypingMind ---
+  // --- 6. Acciones Extras (Inyección Manual y Exportación CSV) ---
   function inyectarEnChat() {
-    if (!ultimosResultados || ultimosResultados.length === 0) {
-      alert("No hay datos para inyectar. Ejecuta una consulta primero.");
-      return;
-    }
-
-    // Formatear a Markdown (máximo 50 filas)
+    if (!ultimosResultados || ultimosResultados.length === 0) return alert("No hay datos.");
     const limit = Math.min(ultimosResultados.length, 50);
     const rows = ultimosResultados.slice(0, limit);
     const columns = Object.keys(rows[0]);
-    
     let md = `*Resultados extraídos de la tabla local (${limit} filas):*\n\n`;
     md += "| " + columns.join(" | ") + " |\n";
     md += "| " + columns.map(() => "---").join(" | ") + " |\n";
-    
     rows.forEach(row => {
       md += "| " + columns.map(col => {
         let val = row[col];
@@ -346,33 +345,41 @@
       }).join(" | ") + " |\n";
     });
 
-    // Buscar el input nativo de TypingMind
     const chatInput = document.querySelector('textarea[data-testid="chat-input"]') || 
                       document.querySelector('textarea[placeholder*="Type"]') || 
                       document.querySelector('[contenteditable="true"]');
-
     if (chatInput) {
-      if (chatInput.tagName === 'TEXTAREA') {
-        chatInput.value += (chatInput.value ? "\n\n" : "") + md;
-      } else {
-        chatInput.textContent += (chatInput.textContent ? "\n\n" : "") + md;
-      }
-      
-      // Despachar evento para que React actualice el estado del botón de envío
+      if (chatInput.tagName === 'TEXTAREA') chatInput.value += (chatInput.value ? "\n\n" : "") + md;
+      else chatInput.textContent += (chatInput.textContent ? "\n\n" : "") + md;
       chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-      
-      // Minimizar el widget automáticamente para ver el chat
       document.getElementById("tmee-body").style.display = "none";
       document.getElementById("tmee-btn-toggle").textContent = "➕";
     } else {
-      // Fallback si el DOM de TM cambia: Copiar al portapapeles
-      navigator.clipboard.writeText(md).then(() => {
-        alert("Tabla copiada al portapapeles. Pégala en el chat.");
-      }).catch(() => {
-        alert("No se encontró el chat. Imprimiendo en consola.");
-        console.log(md);
-      });
+      navigator.clipboard.writeText(md).then(() => alert("Copiado al portapapeles.")).catch(() => console.log(md));
     }
+  }
+
+  function exportarCSV() {
+    if (!ultimosResultados || ultimosResultados.length === 0) return alert("No hay datos para exportar.");
+    const columns = Object.keys(ultimosResultados[0]);
+    const header = columns.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",");
+    const rows = ultimosResultados.map(row => {
+        return columns.map(col => {
+            const val = row[col];
+            if (val === null || val === undefined) return '""';
+            return `"${String(val).replace(/"/g, '""')}"`;
+        }).join(",");
+    });
+    const csvContent = [header, ...rows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "tmee_resultados.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 
   if (document.readyState === "loading") {

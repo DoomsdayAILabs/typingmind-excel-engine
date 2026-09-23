@@ -2,7 +2,7 @@
   "uuid": "7f3c9e21-4b8a-4d6e-9f11-2c8a1b0e4d77",
   "id": "query_excel_data",
   "emoji": "📊",
-  "title": "Excel Engine (local DuckDB)",
+  "title": "Excel Data Engine (consulta local)",
   "version": 1,
   "authenticationType": "AUTH_TYPE_NONE",
   "implementationType": "javascript",
@@ -10,23 +10,14 @@
   "userSettings": [],
   "openaiSpec": {
     "name": "query_excel_data",
-    "description": "Query a locally loaded Excel file using DuckDB SQL. The table name is always excel_data. Column names must be quoted exactly as they appear in the schema (example: \"Fecha\", \"Area\", \"Total TEUs\"). Never ask the user to paste the spreadsheet. Never invent column names: call action=schema first if you are unsure. Only SELECT/WITH queries are allowed. Results are computed locally in the browser; you receive a small JSON summary, not the full file.",
+    "description": "Ejecuta una consulta SQL de SOLO LECTURA (SELECT/WITH) sobre los datos de Excel que ya están cargados localmente en el navegador mediante el motor DuckDB-WASM. Solo puedes hacer consultas SELECT de solo lectura. La tabla siempre se llama 'excel_data'. Nunca pidas al usuario que pegue la hoja de cálculo: los datos ya están disponibles y el resultado se devuelve como tabla Markdown. Si no conoces las columnas exactas, consulta primero: SELECT * FROM excel_data LIMIT 1;",
     "parameters": {
       "type": "object",
-      "required": ["action"],
+      "required": ["sql_query"],
       "properties": {
-        "action": {
+        "sql_query": {
           "type": "string",
-          "enum": ["schema", "preview", "query"],
-          "description": "schema: list columns and types. preview: first 10 rows. query: run the SQL in the sql parameter."
-        },
-        "sql": {
-          "type": "string",
-          "description": "DuckDB SQL against excel_data. Required when action is query. Use quoted identifiers for every column. Prefer aggregations, LIMIT, and GROUP BY so the JSON stays small."
-        },
-        "max_rows": {
-          "type": "number",
-          "description": "Maximum rows to return to the model. Default 200, maximum 500."
+          "description": "Consulta SQL de solo lectura contra la tabla 'excel_data'. Solo se permiten SELECT, WITH (CTE) o EXPLAIN. Cita los nombres de columna entre comillas dobles. Usa LIMIT, WHERE, GROUP BY y agregaciones para mantener el resultado pequeño (máx. 50 filas)."
         }
       }
     }
