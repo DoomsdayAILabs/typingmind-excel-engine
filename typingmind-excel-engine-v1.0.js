@@ -149,7 +149,7 @@
         <div class="tmee-title"><span style="color:#10b981">📊</span> TM Excel Engine v1.0</div>
         <div class="tmee-header-controls">
           <span id="tmee-status" class="tmee-status-badge">Iniciando...</span>
-          <button id="tmee-btn-toggle" class="tmee-btn-icon" title="Minimizar/Maximizar">➖</button>
+          <button id="tmee-btn-toggle" class="tmee-btn-icon" title="Minimizar/Maximizar" style="background:transparent; border:none; cursor:pointer;">➖</button>
         </div>
       </div>
       <div class="tmee-body" id="tmee-body">
@@ -174,10 +174,10 @@
 
           <div style="margin-top: 8px;">
             <div class="tmee-results-header">
-              <div class="tmee-table-title" id="tmee-sql-results-title">Resultados</div>
+              <div class="tmee-table-title" id="tmee-results-title">Resultados</div>
               <div style="display:flex; gap:6px;">
                 <button id="tmee-btn-export" class="tmee-btn-action csv">⬇️ CSV</button>
-                <button id="tmee-btn-inject" class="tmee-btn-primary tmee-btn-inject">💬 Enviar a TM</button>
+                <button id="tmee-btn-inject" class="tmee-btn-primary tmee-btn-inject" style="padding: 4px 8px; font-size: 10px;">💬 Enviar a TM</button>
               </div>
             </div>
             <div class="tmee-table-wrapper">
@@ -305,7 +305,7 @@
   function renderizarTablaSQL(rows) {
     const headersEl = document.getElementById("tmee-sql-headers");
     const bodyEl = document.getElementById("tmee-sql-body");
-    const titleEl = document.getElementById("tmee-sql-results-title");
+    const titleEl = document.getElementById("tmee-results-title");
 
     headersEl.innerHTML = "";
     bodyEl.innerHTML = "";
@@ -356,7 +356,7 @@
 
   /**
    * Convierte las filas en una tabla Markdown, limitando el número de filas
-   * para no saturar el contexto del LLM.
+   * para no saturar el contexto del LLM (máximo MAX_FILAS_INYECCION).
    */
   function construirTablaMarkdown(rows) {
     const filas = rows.slice(0, MAX_FILAS_INYECCION);
@@ -391,7 +391,7 @@
   /** Fase 3B: envía los últimos resultados al chat de TypingMind como tabla Markdown. */
   function inyectarEnChat() {
     if (!ultimosResultados || ultimosResultados.length === 0) {
-      alert("No hay resultados que enviar.\n\nEjecuta primero una consulta SQL en la consola del widget.");
+      alert("No hay resultados que enviar.\n\nEjecuta primero una consulta SQL en la consola del widget y vuelve a intentarlo.");
       return;
     }
 
@@ -431,7 +431,7 @@
 
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(md)
-        .then(() => alert("No se encontró el input del chat de TypingMind.\n\nLa tabla Markdown se copió al portapapeles: pégala con Ctrl+V."))
+        .then(() => alert("No se encontró el input del chat de TypingMind.\n\nTabla copiada al portapapeles. Pégala en el chat con Ctrl+V."))
         .catch(() => alert("No se encontró el input del chat ni se pudo acceder al portapapeles.\n\nCopia manualmente:\n\n" + md));
     } else {
       alert("No se encontró el input del chat ni el portapapeles.\n\nCopia manualmente:\n\n" + md);
