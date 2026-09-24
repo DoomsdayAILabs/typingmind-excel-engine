@@ -1,17 +1,42 @@
 /**
- * TypingMind Excel Engine — v1.0.js (Fase 3B: Minimizar/Maximizar + Inyección de Contexto a la IA)
+ * TypingMind Excel Engine — v1.0.js (Fase 5: UI/UX Móvil + Widget Arrastrable)
  * Script principal de inyección del Widget visual e integración con DuckDB-WASM Worker.
+ *
+ * Cambios de esta fase:
+ *  1) Minimizar ya no deja una barra ancha: el widget pasa a ser un icono circular
+ *     flotante de 50x50 px (clase .tmee-minimized) que solo muestra el emoji 📊.
+ *  2) El widget se puede arrastrar libremente por la pantalla desde la cabecera
+ *     (o desde el icono cuando está minimizado), con soporte de ratón y táctil.
+ *  3) Un clic/tap sin desplazamiento sobre la cabecera alterna minimizar/maximizar
+ *     (se eliminó el botón ➖ #tmee-btn-toggle).
  */
 (function () {
   "use strict";
 
   const WORKER_PATH = "https://doomsdayailabs.github.io/typingmind-excel-engine/duckdb-worker.js";
   const MAX_FILAS_INYECCION = 50;
+
+  // --- Fase 5: constantes de interacción ---
+  const UMBRAL_ARRASTRE_PX = 5;                   // desplazamiento mínimo para considerarlo arrastre y no clic
+  const VENTANA_SUPRESION_MOUSE_MS = 400;         // descarta el mousedown sintético que el navegador emite tras un toque
+  const OPCIONES_TOUCH_MOVE = { passive: false }; // permite preventDefault para evitar el scroll durante el arrastre táctil
+
   let worker = null;
   let workerObjectUrl = null;
   const pending = new Map();
   let nextRequestId = 1;
   let ultimosResultados = [];
+
+  // --- Fase 5: estado del widget y del arrastre ---
+  let rootEl = null;      // nodo #tmee-widget-root
+  let headerEl = null;    // nodo .tmee-header (asa de arrastre y área de clic)
+  let dragActivo = false; // hay un gesto en curso (mousedown/touchstart sin soltar)
+  let isDragging = false; // true solo si el puntero se movió más de UMBRAL_ARRASTRE_PX
+  let dragOffsetX = 0;    // distancia entre el puntero y el borde izquierdo del widget
+  let dragOffsetY = 0;
+  let dragStartX = 0;     // punto donde inició el gesto
+  let dragStartY = 0;
+  let ultimoTouchTs = 0;  // marca temporal del último touchstart
 
   // --- 1. Inicialización del Web Worker con Proxy Blob (CORS Bypass) ---
   async function initWorker() {
@@ -102,17 +127,27 @@
 
   // --- 2. Inyección de la UI del Widget ---
   function injectWidget() {
-    if (document.getElementById("tmee-widget-root")) return;
+    const existente = document.getElementById("tmee-widget-root");
+    if (existente) { rootEl = existente; headerEl = rootEl.querySelector(".tmee-header"); return; }
 
     const styleEl = document.createElement("style");
     styleEl.id = "tmee-widget-styles";
     styleEl.innerHTML = `
-      #tmee-widget-root { position: fixed; bottom: 20px; left: 20px; width: 400px; max-height: 85vh; background-color: #1e2026; border: 1px solid #374151; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); color: #f3f4f6; font-family: -apple-system, sans-serif; display: flex; flex-direction: column; overflow: hidden; z-index: 99999; }
-      .tmee-header { padding: 12px 16px; background-color: #111318; border-bottom: 1px solid #374151; display: flex; justify-content: space-between; align-items: center; }
+      #tmee-widget-root { position: fixed; bottom: 20px; left: 20px; width: 400px; max-width: calc(100vw - 40px); max-height: 85vh; background-color: #1e2026; border: 1px solid #374151; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); color: #f3f4f6; font-family: -apple-system, sans-serif; display: flex; flex-direction: column; overflow: hidden; z-index: 99999; transition: width 0.3s, height 0.3s, border-radius 0.3s; }
+      .tmee-header { padding: 12px 16px; background-color: #111318; border-bottom: 1px solid #374151; display: flex; justify-content: space-between; align-items: center; cursor: grab; -webkit-user-select: none; user-select: none; touch-action: none; }
+      #tmee-widget-root.tmee-dragging, #tmee-widget-root.tmee-dragging .tmee-header { cursor: grabbing; }
+      /* Fase 5: modo icono flotante (widget minimizado = botón circular de 50px) */
+      #tmee-widget-root.tmee-minimized { width: 50px !important; height: 50px !important; border-radius: 25px !important; cursor: pointer; padding: 0; justify-content: center; align-items: center; background-color: #1e2026; transition: width 0.3s, height 0.3s, border-radius 0.3s; }
+      #tmee-widget-root.tmee-minimized .tmee-body,
+      #tmee-widget-root.tmee-minimized .tmee-header-controls,
+      #tmee-widget-root.tmee-minimized .tmee-status-badge,
+      #tmee-widget-root.tmee-minimized .tmee-title-text { display: none !important; }
+      #tmee-widget-root.tmee-minimized .tmee-header { padding: 0; width: 100%; height: 100%; justify-content: center; border-bottom: none; background-color: transparent; }
+      #tmee-widget-root.tmee-minimized .tmee-title { gap: 0; justify-content: center; }
+      #tmee-widget-root.tmee-minimized .tmee-logo { font-size: 24px !important; margin: 0; display: block; text-align: center; width: 100%; }
       .tmee-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+      .tmee-logo { color: #10b981; font-size: 16px; line-height: 1; }
       .tmee-header-controls { display: flex; align-items: center; gap: 8px; }
-      .tmee-btn-icon { background: transparent; border: none; color: #9ca3af; cursor: pointer; font-size: 14px; padding: 0 4px; transition: color 0.2s; }
-      .tmee-btn-icon:hover { color: #f3f4f6; }
       .tmee-status-badge { font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 500; background-color: #374151; color: #9ca3af; }
       .tmee-status-badge.pending { background-color: rgba(245,158,11,0.2); color: #fbbf24; }
       .tmee-status-badge.success { background-color: rgba(16,185,129,0.2); color: #34d399; }
@@ -142,14 +177,13 @@
     `;
     document.head.appendChild(styleEl);
 
-    const rootEl = document.createElement("div");
+    rootEl = document.createElement("div");
     rootEl.id = "tmee-widget-root";
     rootEl.innerHTML = `
-      <div class="tmee-header">
-        <div class="tmee-title"><span style="color:#10b981">📊</span> TM Excel Engine v1.0</div>
+      <div class="tmee-header" id="tmee-header" title="Arrastra para mover · Clic para minimizar">
+        <div class="tmee-title"><span class="tmee-logo">📊</span> <span class="tmee-title-text">TM Excel Engine v1.0</span></div>
         <div class="tmee-header-controls">
           <span id="tmee-status" class="tmee-status-badge">Iniciando...</span>
-          <button id="tmee-btn-toggle" class="tmee-btn-icon" title="Minimizar/Maximizar" style="background:transparent; border:none; cursor:pointer;">➖</button>
         </div>
       </div>
       <div class="tmee-body" id="tmee-body">
@@ -191,6 +225,7 @@
       </div>
     `;
     document.body.appendChild(rootEl);
+    headerEl = rootEl.querySelector(".tmee-header");
     setupEvents();
   }
 
@@ -198,10 +233,9 @@
   function setupEvents() {
     const dropzone = document.getElementById("tmee-dropzone");
     const fileInput = document.getElementById("tmee-file-input");
-    const toggleBtn = document.getElementById("tmee-btn-toggle");
 
-    // Fase 3B: minimizar / maximizar el panel del widget
-    toggleBtn.addEventListener("click", () => setWidgetMinimizado(!estaMinimizado()));
+    // Fase 5: la cabecera es el asa de arrastre y también el interruptor minimizar/maximizar
+    setupDrag();
 
     document.getElementById("tmee-select-btn").addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", (e) => e.target.files[0] && procesarArchivo(e.target.files[0]));
@@ -216,22 +250,162 @@
     document.getElementById("tmee-btn-run-sql").addEventListener("click", ejecutarSQL);
     document.getElementById("tmee-btn-inject").addEventListener("click", inyectarEnChat);
     document.getElementById("tmee-btn-export").addEventListener("click", exportarCSV);
+
+    // Fase 5: al girar el móvil o redimensionar, el widget se mantiene dentro de la pantalla
+    window.addEventListener("resize", reajustarPosicion);
   }
 
-  // --- 3.1 Control de visibilidad (Minimizar / Maximizar) ---
+  // --- 3.1 Fase 5: arrastre del widget por la pantalla (ratón + táctil) ---
+  /** Normaliza las coordenadas del puntero para eventos de ratón y eventos táctiles. */
+  function obtenerPuntoPuntero(e) {
+    if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.changedTouches && e.changedTouches.length > 0) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  /** Evita que el widget quede total o parcialmente fuera de la ventana visible. */
+  function limitarDentroDeViewport(left, top) {
+    if (!rootEl) return { left: left, top: top };
+    const ancho = rootEl.offsetWidth || 50;
+    const alto = rootEl.offsetHeight || 50;
+    const maxLeft = Math.max(0, window.innerWidth - ancho);
+    const maxTop = Math.max(0, window.innerHeight - alto);
+    return {
+      left: Math.min(Math.max(0, left), maxLeft),
+      top: Math.min(Math.max(0, top), maxTop)
+    };
+  }
+
+  /** Recoloca el widget dentro de la pantalla (se usa al cambiar de tamaño o de orientación). */
+  function reajustarPosicion() {
+    // Si nunca se arrastró, el widget conserva su anclaje original (bottom/left)
+    if (!rootEl || !rootEl.style.left) return;
+
+    const ajustar = () => {
+      if (!rootEl) return;
+      const rect = rootEl.getBoundingClientRect();
+      const destino = limitarDentroDeViewport(rect.left, rect.top);
+      rootEl.style.left = destino.left + "px";
+      rootEl.style.top = destino.top + "px";
+    };
+
+    requestAnimationFrame(ajustar);
+    setTimeout(ajustar, 320); // al terminar la transición de tamaño (0.3s)
+  }
+
+  /** Registra el asa de arrastre: cabecera expandida o icono circular minimizado. */
+  function setupDrag() {
+    if (!headerEl) return;
+    headerEl.addEventListener("mousedown", iniciarArrastre);
+    headerEl.addEventListener("touchstart", iniciarArrastre, { passive: true });
+    headerEl.addEventListener("mouseup", soltarSobreCabecera);
+    headerEl.addEventListener("touchend", soltarSobreCabecera);
+  }
+
+  /** Inicia el gesto: guarda el offset del puntero respecto al widget y conecta los listeners de movimiento. */
+  function iniciarArrastre(e) {
+    if (!rootEl) return;
+
+    if (e.type === "mousedown") {
+      // El navegador emite mousedown/mouseup sintéticos tras un toque: se ignoran para no alternar dos veces
+      if (Date.now() - ultimoTouchTs < VENTANA_SUPRESION_MOUSE_MS) return;
+    } else if (e.type === "touchstart") {
+      ultimoTouchTs = Date.now();
+      if (e.touches && e.touches.length > 1) return; // gestos multitáctiles: no arrastrar
+    }
+
+    const punto = obtenerPuntoPuntero(e);
+    const rect = rootEl.getBoundingClientRect();
+
+    dragOffsetX = punto.x - rect.left;
+    dragOffsetY = punto.y - rect.top;
+    dragStartX = punto.x;
+    dragStartY = punto.y;
+    dragActivo = true;
+    isDragging = false;
+
+    document.addEventListener("mousemove", moverArrastre);
+    document.addEventListener("touchmove", moverArrastre, OPCIONES_TOUCH_MOVE);
+    document.addEventListener("mouseup", finalizarArrastre);
+    document.addEventListener("touchend", finalizarArrastre);
+    document.addEventListener("touchcancel", finalizarArrastre);
+  }
+
+  /** Actualiza la posición del widget mientras el puntero se mueve (listener de document). */
+  function moverArrastre(e) {
+    if (!rootEl || !dragActivo) return;
+
+    const punto = obtenerPuntoPuntero(e);
+
+    if (!isDragging) {
+      const distancia = Math.hypot(punto.x - dragStartX, punto.y - dragStartY);
+      // Menos de 5 px de recorrido todavía puede ser un clic/tap para minimizar o maximizar
+      if (distancia <= UMBRAL_ARRASTRE_PX) return;
+
+      isDragging = true;
+      // Primer movimiento real: se abandona el anclaje inferior/derecho para posicionar libremente
+      rootEl.style.bottom = "auto";
+      rootEl.style.right = "auto";
+      rootEl.classList.add("tmee-dragging");
+    }
+
+    // En táctil, evita que la página haga scroll mientras se arrastra el widget
+    if (e.type === "touchmove" && e.cancelable) e.preventDefault();
+
+    const destino = limitarDentroDeViewport(punto.x - dragOffsetX, punto.y - dragOffsetY);
+    rootEl.style.left = destino.left + "px";
+    rootEl.style.top = destino.top + "px";
+  }
+
+  /** Finaliza el gesto y desconecta los listeners de movimiento (listener de document). */
+  function finalizarArrastre() {
+    document.removeEventListener("mousemove", moverArrastre);
+    document.removeEventListener("touchmove", moverArrastre, OPCIONES_TOUCH_MOVE);
+    document.removeEventListener("mouseup", finalizarArrastre);
+    document.removeEventListener("touchend", finalizarArrastre);
+    document.removeEventListener("touchcancel", finalizarArrastre);
+
+    if (rootEl) rootEl.classList.remove("tmee-dragging");
+    dragActivo = false;
+    isDragging = false;
+  }
+
+  /**
+   * mouseup/touchend sobre la cabecera: si el gesto no se convirtió en arrastre,
+   * se interpreta como clic y se alterna minimizar/maximizar.
+   */
+  function soltarSobreCabecera(e) {
+    if (dragActivo && !isDragging) {
+      // En táctil, cancelar el touchend evita que el navegador emita los eventos de ratón sintéticos
+      if (e && e.type === "touchend" && e.cancelable) e.preventDefault();
+      toggleWidget();
+    }
+    // La limpieza del gesto la realiza finalizarArrastre() desde el listener de document
+  }
+
+  // --- 3.2 Control de visibilidad (Minimizar / Maximizar) ---
   function estaMinimizado() {
-    const bodyEl = document.getElementById("tmee-body");
-    return !bodyEl || bodyEl.style.display === "none";
+    return !!rootEl && rootEl.classList.contains("tmee-minimized");
+  }
+
+  function toggleWidget() {
+    setWidgetMinimizado(!estaMinimizado());
   }
 
   function setWidgetMinimizado(minimizado) {
-    const bodyEl = document.getElementById("tmee-body");
-    const toggleBtn = document.getElementById("tmee-btn-toggle");
-    if (bodyEl) bodyEl.style.display = minimizado ? "none" : "flex";
-    if (toggleBtn) {
-      toggleBtn.textContent = minimizado ? "➕" : "➖";
-      toggleBtn.title = minimizado ? "Maximizar widget" : "Minimizar widget";
+    if (!rootEl) return;
+    rootEl.classList.toggle("tmee-minimized", !!minimizado);
+    sincronizarEstadoMinimizado();
+  }
+
+  /** Ajusta los elementos dependientes del estado minimizado (tooltip y posición dentro de la pantalla). */
+  function sincronizarEstadoMinimizado() {
+    if (headerEl) {
+      headerEl.title = estaMinimizado()
+        ? "Clic para expandir · Arrastra para mover"
+        : "Arrastra para mover · Clic para minimizar";
     }
+    reajustarPosicion();
   }
 
   function updateStatus(text, statusClass = "") {
@@ -424,7 +598,9 @@
         // Algunos editores enriquecidos no permiten manipular la selección
       }
 
-      setWidgetMinimizado(true);
+      // Fase 5: el minimizado automático solo activa el modo icono flotante
+      if (rootEl) rootEl.classList.add("tmee-minimized");
+      sincronizarEstadoMinimizado();
       updateStatus("Enviado al chat", "success");
       return;
     }

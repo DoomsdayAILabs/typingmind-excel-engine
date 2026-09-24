@@ -14,7 +14,7 @@
 <body>
   <div class="chat">
     <h2>Simulación del chat de TypingMind</h2>
-    <p>Verificación visual Fase 3B: widget expandido, botón "Enviar a TM" y minimización.</p>
+    <p>Verificación visual Fase 5: widget expandido, botón "Enviar a TM", icono flotante minimizado y arrastre (#min, #drag).</p>
     <textarea data-testid="chat-input" placeholder="Type a message"></textarea>
   </div>
 
@@ -55,10 +55,31 @@
       input.dispatchEvent(new Event("change", { bubbles: true }));
     }
 
+    // Fase 5: el toggle se hace con un clic (mousedown + mouseup) sobre la cabecera arrastrable
+    function simularClicCabecera() {
+      var cabecera = document.getElementById("tmee-header");
+      var r = cabecera.getBoundingClientRect();
+      var x = Math.round(r.left + r.width / 2);
+      var y = Math.round(r.top + r.height / 2);
+      cabecera.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+      cabecera.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+    }
+
+    // Fase 5: arrastre simulado con ratón para la captura visual del widget reubicado
+    function simularArrastre(dx, dy) {
+      var cabecera = document.getElementById("tmee-header");
+      var r = cabecera.getBoundingClientRect();
+      var x = Math.round(r.left + 40), y = Math.round(r.top + 10);
+      cabecera.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+      document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x + dx, clientY: y + dy }));
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x + dx, clientY: y + dy }));
+    }
+
     setTimeout(function () {
       simularCargaCSV();
       if (location.hash === "#send") setTimeout(function () { document.getElementById("tmee-btn-inject").click(); }, 700);
-      if (location.hash === "#min") setTimeout(function () { document.getElementById("tmee-btn-toggle").click(); }, 700);
+      if (location.hash === "#min") setTimeout(function () { simularClicCabecera(); }, 700);
+      if (location.hash === "#drag") setTimeout(function () { simularArrastre(180, -180); }, 700);
     }, 250);
   </script>
 </body>

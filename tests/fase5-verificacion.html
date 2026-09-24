@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verificación Fase 5 (UI móvil + widget arrastrable)</title>
+  <style>body { background: #111318; color: #f3f4f6; font-family: sans-serif; }</style>
+</head>
+<body>
+  <h1>Verificación Fase 5 (temporal)</h1>
+
+  <!-- Simulación del chat de TypingMind -->
+  <textarea data-testid="chat-input" placeholder="Type a message"></textarea>
+
+  <div id="verify-results"></div>
+
+  <script>
+    // --- Stubs previos a la carga del motor (Worker + fetch) ---
+    window.__alerts = [];
+    window.__mockRows = [{ id: 1, nota: "a" }, { id: 2, nota: "b" }];
+
+    window.alert = function (msg) { window.__alerts.push(String(msg)); };
+
+    window.fetch = async function () {
+      return { ok: true, text: async () => "// worker mock (verificación Fase 5)" };
+    };
+
+    window.Worker = class MockWorker {
+      constructor(url) { window.__workerUrl = String(url); }
+      postMessage(msg) {
+        const responder = (success, data) => setTimeout(() => {
+          if (this.onmessage) this.onmessage({ data: { requestId: msg.requestId, success, data } });
+        }, 5);
+        if (msg.type === "initDuckDB") responder(true, { ready: true });
+        else if (msg.type === "executeQuery") responder(true, window.__mockRows);
+      }
+    };
+  </script>
+
+  <!-- Ejecutar: node tests/run-headless.js tests/fase5-verificacion.html ("--all" imprime todos los checks)
+       o directamente: chrome --headless=new --dump-dom --window-size=900,760 --virtual-time-budget=30000 "file:///<ruta-repo>/tests/fase5-verificacion.html"
+       (el resultado se publica en document.title como JSON codificado)
+       Nota: en headless las transiciones CSS no avanzan, por lo que el propio test
+       desactiva las transiciones para medir la geometría final del icono flotante. -->
+  <script src="../typingmind-excel-engine-v1.0.js"></script>
+
+  <script>
+    const resultados = { checks: [], logs: [] };
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+    const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+    const root = () => document.getElementById("tmee-widget-root");
+    const cabecera = () => document.getElementById("tmee-header");
+    const body = () => document.getElementById("tmee-body");
+
+    function raton(tipo, x, y, objetivo) {
+      (objetivo || document).dispatchEvent(new MouseEvent(tipo, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    }
+
+    function toque(tipo, x, y, objetivo) {
+      const destino = objetivo || document;
+      const t = new Touch({ identifier: 1, target: destino, clientX: x, clientY: y, pageX: x, pageY: y });
+      const activos = tipo === "touchend" ? [] : [t];
+      destino.dispatchEvent(new TouchEvent(tipo, {
+        bubbles: true, cancelable: true, touches: activos, targetTouches: activos, changedTouches: [t]
+      }));
+    }
+
+    function clicRatonCabecera() {
+      const r = cabecera().getBoundingClientRect();
+      const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+      raton("mousedown", x, y, cabecera());
+      raton("mouseup", x, y, cabecera());
+    }
+  </script>
+
+  <script>
+    (async function run() {
+      await esperar(300);
+
+      // Las transiciones CSS no avanzan en headless: se desactivan para medir la geometría final
+      // (la existencia de la transición se verifica aparte, sobre el CSS inyectado)
+      const sinTransiciones = document.createElement("style");
+      sinTransiciones.textContent = "#tmee-widget-root, .tmee-header, .tmee-body { transition: none !important; }";
+      document.head.appendChild(sinTransiciones);
+
+      // 1. Estructura y estilos base del widget
+      check("Widget inyectado", !!root());
+      check("Fase 5: botón ➖ eliminado del HTML", !document.getElementById("tmee-btn-toggle"));
+      check("Cabecera con id tmee-header (asa de arrastre)", !!cabecera());
+      check("Emoji 📊 presente (.tmee-logo)", document.querySelector(".tmee-logo").textContent.trim() === "📊");
+      check("Texto del título separado en .tmee-title-text", !!document.querySelector(".tmee-title-text"));
+      check("CSS: cursor grab en la cabecera", /cursor: grab;/.test(document.getElementById("tmee-widget-styles").textContent));
+
+      // 2. Minimizar con un clic sobre la cabecera -> icono circular flotante
+      check("Arranca maximizado", !root().classList.contains("tmee-minimized"));
+      clicRatonCabecera();
+      await esperar(450);
+      check("Clic en cabecera añade .tmee-minimized", root().classList.contains("tmee-minimized"));
+      check("Cuerpo oculto al minimizar (.tmee-body)", getComputedStyle(body()).display === "none", getComputedStyle(body()).display);
+      check("Badge de estado oculto al minimizar", getComputedStyle(document.getElementById("tmee-status")).display === "none");
+      check("Texto del título oculto al minimizar", getComputedStyle(document.querySelector(".tmee-title-text")).display === "none");
+      check("Emoji visible al minimizar", getComputedStyle(document.querySelector(".tmee-logo")).display !== "none");
+      check("Emoji a 24px en modo icono", getComputedStyle(document.querySelector(".tmee-logo")).fontSize === "24px",
+        getComputedStyle(document.querySelector(".tmee-logo")).fontSize);
+      check("Icono circular 50x50 px", getComputedStyle(root()).width === "50px" && getComputedStyle(root()).height === "50px",
+        getComputedStyle(root()).width + "x" + getComputedStyle(root()).height);
+      check("Icono con border-radius 25px", getComputedStyle(root()).borderRadius === "25px", getComputedStyle(root()).borderRadius);
+      check("Tooltip invita a expandir", /expandir/.test(cabecera().title), cabecera().title);
+
+      // 3. Maximizar con un clic sobre el círculo
+      clicRatonCabecera();
+      await esperar(450);
+      check("Clic en el icono expande de nuevo", !root().classList.contains("tmee-minimized"));
+      check("Cuerpo visible al expandir", getComputedStyle(body()).display === "flex", getComputedStyle(body()).display);
+
+      // 4. Arrastre con ratón: mueve el widget (arriba y a la derecha) y NO alterna minimizado
+      const antes = root().getBoundingClientRect();
+      raton("mousedown", Math.round(antes.left + 60), Math.round(antes.top + 10), cabecera());
+      check("Sin .tmee-dragging antes de moverse", !root().classList.contains("tmee-dragging"));
+      raton("mousemove", Math.round(antes.left + 60) + 140, Math.round(antes.top + 10) - 120);
+      check("Clase .tmee-dragging durante el arrastre", root().classList.contains("tmee-dragging"));
+      raton("mouseup", antes.left + 200, antes.top - 110);
+      await esperar(30);
+      const despues = root().getBoundingClientRect();
+      check("El arrastre desplaza el widget (ratón)",
+        (despues.left - antes.left) > 100 && (antes.top - despues.top) > 70,
+        Math.round(despues.left) + "," + Math.round(despues.top));
+      check("left/top en línea aplicados", !!root().style.left && !!root().style.top, root().style.left + "/" + root().style.top);
+      check("bottom/right liberados a auto", root().style.bottom === "auto" && root().style.right === "auto",
+        root().style.bottom + "/" + root().style.right);
+      check("El arrastre NO minimiza", !root().classList.contains("tmee-minimized"));
+      check("Limpieza: sin .tmee-dragging tras soltar", !root().classList.contains("tmee-dragging"));
+
+      // 5. Umbral de 5 px: un micro-movimiento sigue siendo clic
+      const p5 = root().getBoundingClientRect();
+      raton("mousedown", Math.round(p5.left + 40), Math.round(p5.top + 10), cabecera());
+      raton("mousemove", Math.round(p5.left + 42), Math.round(p5.top + 12));
+      check("Micro-movimiento (<5px) no activa arrastre", !root().classList.contains("tmee-dragging"));
+      raton("mouseup", Math.round(p5.left + 42), Math.round(p5.top + 12), cabecera());
+      await esperar(30);
+      check("Micro-movimiento se trata como clic (minimiza)", root().classList.contains("tmee-minimized"));
+      clicRatonCabecera();
+      await esperar(30);
+      check("Se puede volver a expandir", !root().classList.contains("tmee-minimized"));
+
+      // 6. Arrastre táctil (touchstart / touchmove / touchend)
+      const p6 = root().getBoundingClientRect();
+      const x6 = Math.round(p6.left + 40), y6 = Math.round(p6.top + 10);
+      toque("touchstart", x6, y6, cabecera());
+      toque("touchmove", x6 + 100, y6 - 70);
+      check("Arrastre táctil marca .tmee-dragging", root().classList.contains("tmee-dragging"));
+      toque("touchend", x6 + 100, y6 - 70, cabecera());
+      await esperar(30);
+      const p7 = root().getBoundingClientRect();
+      check("El arrastre desplaza el widget (táctil)",
+        (p7.left - p6.left) > 80 && (p6.top - p7.top) > 50,
+        Math.round(p7.left) + "," + Math.round(p7.top));
+      check("El arrastre táctil NO minimiza", !root().classList.contains("tmee-minimized"));
+
+      // 7. Tap táctil: alterna una sola vez, aunque llegue el mouse sintético del navegador
+      const p8 = root().getBoundingClientRect();
+      const x8 = Math.round(p8.left + 25), y8 = Math.round(p8.top + 25);
+      toque("touchstart", x8, y8, cabecera());
+      toque("touchend", x8, y8, cabecera());
+      await esperar(20);
+      const miniTrasTap = root().classList.contains("tmee-minimized");
+      check("Tap táctil alterna el modo icono", miniTrasTap === true, "minimizado=" + miniTrasTap);
+      raton("mousedown", x8, y8, cabecera());
+      raton("mouseup", x8, y8, cabecera());
+      await esperar(20);
+      check("El mouse sintético posterior no vuelve a alternar",
+        root().classList.contains("tmee-minimized") === miniTrasTap);
+      await esperar(650); // fuera de la ventana de supresión del mouse sintético
+      clicRatonCabecera();
+      await esperar(30);
+      check("Vuelve a estado expandido", !root().classList.contains("tmee-minimized"));
+
+      // 8. El widget nunca sale de la pantalla
+      await esperar(650); // fuera de la ventana de supresión del mouse sintético
+      raton("mousedown", 30, 30, cabecera());
+      raton("mousemove", 9000, 9000);
+      raton("mouseup", 9000, 9000);
+      await esperar(30);
+      const p9 = root().getBoundingClientRect();
+      check("El widget se mantiene dentro de la pantalla",
+        p9.left >= 0 && p9.top >= 0 && p9.right <= window.innerWidth + 1 && p9.bottom <= window.innerHeight + 1,
+        [p9.left, p9.top, p9.right, p9.bottom].map(Math.round).join(",") + " / " + window.innerWidth + "x" + window.innerHeight);
+
+      // 9. El auto-minimizado al enviar a TypingMind usa el modo icono flotante
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { channel: "tm-excel-engine", action: "execute_sql", sql: "SELECT * FROM excel_data", requestId: 11 }
+      }));
+      await esperar(200);
+      document.getElementById("tmee-btn-inject").click();
+      await esperar(120);
+      check("Enviar a TM activa el modo icono flotante", root().classList.contains("tmee-minimized"));
+      check("Tabla Markdown inyectada en el chat",
+        document.querySelector('textarea[data-testid="chat-input"]').value.includes("| id | nota |"));
+      check("Estado del widget actualizado",
+        document.getElementById("tmee-status").textContent === "Enviado al chat",
+        document.getElementById("tmee-status").textContent);
+
+      // 10. Reglas CSS exigidas por la especificación
+      const css = document.getElementById("tmee-widget-styles").textContent;
+      check("CSS: .tmee-minimized width/height 50px !important",
+        css.includes(".tmee-minimized { width: 50px !important; height: 50px !important; border-radius: 25px !important;"));
+      check("CSS: cursor pointer en el modo icono", /\.tmee-minimized \{[^}]*cursor: pointer;/.test(css));
+      check("CSS: transición de tamaño", css.includes("transition: width 0.3s, height 0.3s, border-radius 0.3s;"));
+      check("CSS: fondo #1e2026 en el modo icono", /\.tmee-minimized \{[^}]*background-color: #1e2026;/.test(css));
+      check("CSS: oculta body, badge y texto del título",
+        css.includes(".tmee-minimized .tmee-body") && css.includes(".tmee-minimized .tmee-status-badge") &&
+        css.includes(".tmee-minimized .tmee-title-text"));
+      check("CSS: .tmee-header con user-select none y touch-action none",
+        css.includes("-webkit-user-select: none; user-select: none; touch-action: none;"));
+
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados);
+      document.title = "RES:" + encodeURIComponent(JSON.stringify(resultados));
+    })();
+  </script>
+
+</body>
+</html>

@@ -76,18 +76,30 @@
 
       // 1. UI inyectada
       check("Widget inyectado", !!document.getElementById("tmee-widget-root"));
-      check("Botón toggle en .tmee-header-controls", !!document.querySelector(".tmee-header-controls #tmee-btn-toggle"));
+      check("Fase 5: botón ➖ eliminado", !document.getElementById("tmee-btn-toggle"));
+      check("Fase 5: cabecera arrastrable (#tmee-header)", !!document.querySelector("#tmee-widget-root #tmee-header"));
       const btnInject = document.getElementById("tmee-btn-inject");
       check("Botón inyectar con clases correctas", btnInject.className === "tmee-btn-primary tmee-btn-inject", btnInject.className);
       check("Texto del botón inyectar", btnInject.textContent.trim() === "💬 Enviar a TM", btnInject.textContent.trim());
 
-      // 2. Minimizar / Maximizar
+      // 2. Minimizar / Maximizar (Fase 5: clic sobre la cabecera)
       const body = document.getElementById("tmee-body");
-      const toggle = document.getElementById("tmee-btn-toggle");
-      toggle.click(); await esperar(30);
-      check("Toggle minimiza (none + ➕)", body.style.display === "none" && toggle.textContent === "➕", body.style.display + "/" + toggle.textContent);
-      toggle.click(); await esperar(30);
-      check("Toggle maximiza (flex + ➖)", body.style.display === "flex" && toggle.textContent === "➖", body.style.display + "/" + toggle.textContent);
+      const rootEl = document.getElementById("tmee-widget-root");
+      const cabecera = document.getElementById("tmee-header");
+      const clicCabecera = () => {
+        const r = cabecera.getBoundingClientRect();
+        const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+        cabecera.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+        cabecera.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+      };
+      clicCabecera(); await esperar(400);
+      check("Clic en cabecera minimiza (.tmee-minimized + body oculto)",
+        rootEl.classList.contains("tmee-minimized") && getComputedStyle(body).display === "none",
+        rootEl.className + "/" + getComputedStyle(body).display);
+      clicCabecera(); await esperar(400);
+      check("Clic en cabecera maximiza (body visible)",
+        !rootEl.classList.contains("tmee-minimized") && getComputedStyle(body).display === "flex",
+        rootEl.className + "/" + getComputedStyle(body).display);
 
       // 3. Puente IA deja resultados disponibles
       await puenteIA(MOCK, false, 7);
@@ -118,7 +130,9 @@
       check("Limita a 50 filas (de 60)", filasDatos === 50, filasDatos);
       check("Avisa de filas omitidas", valor.includes("Se omitieron 10 filas"));
       check("Dispara evento input (React)", eventosInput === 1, eventosInput);
-      check("Minimiza tras enviar", body.style.display === "none" && toggle.textContent === "➕", body.style.display + "/" + toggle.textContent);
+      check("Minimiza tras enviar (modo icono flotante)",
+        rootEl.classList.contains("tmee-minimized") && getComputedStyle(body).display === "none",
+        rootEl.className + "/" + getComputedStyle(body).display);
       check("Estado del widget actualizado", document.getElementById("tmee-status").textContent === "Enviado al chat",
         document.getElementById("tmee-status").textContent);
       // 5. Suma al texto existente sin borrar el contenido del usuario
