@@ -21,8 +21,10 @@ que añade un motor de base de datos analítico dentro de la propia interfaz:
 1. El usuario arrastra un **CSV / Parquet / XLSX / XLS** sobre un widget flotante inyectado en la página.
 2. El archivo se registra en un **sistema de archivos virtual de DuckDB‑WASM** que vive dentro de un
    **Web Worker** (procesamiento pesado aislado de la interfaz, sin bloquear el chat).
-3. DuckDB crea la tabla `excel_data` y la deja consultable con **SQL estándar** (filtros, agregaciones,
-   CTEs, `JOIN`, funciones de ventana, `PIVOT`, `read_csv_auto`, tipos automáticos…).
+3. DuckDB crea la tabla principal `excel_data` (hoja 0) y, si el libro tiene más pestañas, una tabla
+   secundaria `excel_data_<hoja>` por cada una, todas consultables con **SQL estándar** (filtros,
+   agregaciones, CTEs, `JOIN` entre pestañas, funciones de ventana, `PIVOT`, `read_csv_auto`, tipos
+   automáticos…).
 4. Un **plugin de IA** expone la función `query_excel_data(sql_query)` al modelo, de modo que el LLM
    **escribe el SQL, recibe el resultado en Markdown y responde** con datos reales del archivo.
 
@@ -271,7 +273,7 @@ y la extensión responde al `event.source` (o hace *broadcast* a los iframes si 
 ### Paso 3 · Verificación en 30 segundos
 
 1. Widget visible y estado **Motor Listo**.
-2. Arrastra `test-data/TEUs.xlsx` (o cualquier CSV) al panel → aparece *Tabla: `excel_data`*,
+2. Arrastra `tu_archivo.xlsx` (o cualquier CSV) al panel → aparece *Tabla: `excel_data`*,
    el número de registros y la tabla de resultados.
 3. Pregunta al chat: *“¿Cuántas filas tiene la tabla excel_data?”* con el plugin activo → el modelo
    llamará a `query_excel_data` y responderá con el dato real.
@@ -357,7 +359,7 @@ no recargues la página).
 | Ubicación de los datos | Memoria del navegador (VFS de DuckDB dentro del Worker). Nunca se suben. |
 | Persistencia | Ninguna: al recargar la página se pierde todo (el VFS se limpia con `dropFile`). |
 | Permisos de red | Solo para descargar los binarios de DuckDB‑WASM y SheetJS desde jsDelivr. |
-| Superficie de escritura de la IA | Bloqueada: el plugin rechaza cualquier sentencia que no sea `SELECT`/`WITH`/`EXPLAIN`. |
+| Superficie de escritura de la IA | Bloqueada: el plugin solo acepta consultas de lectura (`SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`) y rechaza cualquier otra sentencia. |
 | Credenciales | El plugin es `AUTH_TYPE_NONE`; no hay claves ni tokens. |
 | Alcance del plugin | Corre en un iframe *sandbox* sin acceso al motor: solo intercambia texto por `postMessage`. |
 | Qué ve el LLM | Únicamente lo que llega al chat: tu pregunta y las tablas Markdown (≤ 50 filas) que inyectes o que el plugin devuelva por una consulta concreta. |
@@ -420,7 +422,6 @@ typingmind-excel-engine/
 │   ├── fase3b-visual.html            ← DEV: capturas visuales (#min / #drag / #send)
 │   ├── sql-test-runner.html          ← DEV: batería de consultas SQL
 │   └── run-headless.js               ← DEV: runner de los tests en Chrome/Edge headless
-├── test-data/                        ← Datos de ejemplo (TEUs.xlsx, RequerimientoPrueba.xlsx)
 │
 ├── backup/duckdb-worker.v0.4.23-contaminado.js  ← LEGADO (histórico, no usar)
 └── duckdb/typingmind-excel-engine-v0.3-test.js  ← LEGADO (prototipo v0.3, no usar)
@@ -461,10 +462,10 @@ Estado verificado de esta entrega: `44/44` checks de Fase 5 y `25/25` de regresi
 | No aparece el widget | Extensión no guardada o no recargada / bloqueador de scripts | Guarda la extensión, recarga TypingMind y revisa la consola del navegador |
 | *“Error de inicialización”* o *“Fallo al iniciar: Failed to fetch”* | `WORKER_PATH` no apunta a un `duckdb-worker.js` accesible | Verifica la URL de GitHub Pages (y la constante `WORKER_PATH` si usas un fork) |
 | *“Error en Worker”* | CDN bloqueado (red corporativa, sin Internet) | Permite `cdn.jsdelivr.net` o autoaloja los bundles de DuckDB‑WASM/SheetJS |
-| *“Error CSV/Excel”* al cargar | Archivo vacío, corrupto o formato inesperado | Prueba con `test-data/TEUs.xlsx`; para CSV confirma separador y codificación UTF‑8 |
+| *“Error CSV/Excel”* al cargar | Archivo vacío, corrupto o formato inesperado | Prueba con tu propio `ejemplo.xlsx`; para CSV confirma separador y codificación UTF‑8 |
 | *“Error SQL”* | Nombre de columna inexistente o sintaxis | `SELECT * FROM excel_data LIMIT 1;` para ver columnas y tipos reales |
 | La IA dice que el motor no responde (timeout) | Extensión no cargada, plugin desactivado o ningún archivo procesado | Carga el archivo en el widget y activa el plugin en la conversación |
-| La IA intenta escribir datos | Comportamiento esperado del *guardrail* | Solo se permiten `SELECT`/`WITH`/`EXPLAIN`; pídele una consulta de lectura |
+| La IA intenta escribir datos | Comportamiento esperado del *guardrail* | Solo se permiten consultas de lectura (`SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`); pídele una consulta de lectura |
 | Los resultados se ven recortados | Límites deliberados (100 en pantalla, 50 en chat) | Añade `LIMIT`/agregaciones; exporta por **⬇️ CSV** si necesitas todo |
 
 ---
