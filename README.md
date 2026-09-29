@@ -135,8 +135,9 @@ Tres piezas independientes, todas **dentro del navegador del usuario**:
 [Extension UI]     lee el archivo y envia loadCSV | loadParquet | loadExcel al Worker
      |
      v
-[Worker DuckDB]    read_csv_auto / read_parquet / SheetJS -> CREATE TABLE excel_data
-     |             responde: registros, columnas, esquema y preview (10 filas)
+[Worker DuckDB]    read_csv_auto / read_parquet / SheetJS -> una tabla por pestaña
+     |             (excel_data + excel_data_<hoja saneada>) y responde: registros,
+     |             columnas, esquema, preview (10 filas) e inventario de hojas
      v
 [Extension UI]     muestra metadatos y previsualiza los resultados
      |
@@ -166,14 +167,27 @@ Via alternativa (sin IA): ejecutar el SQL a mano en el widget y pulsar
 
 | `type` | Payload | Devuelve |
 |---|---|---|
-| `initDuckDB` | `{}` | `{ version: "v1.0-phase-1b", status: "ready", bundle }` |
+| `initDuckDB` | `{}` | `{ version: "v1.0-phase-1b+multisheet", status: "ready", bundle }` |
 | `loadCSV` | `{ csvData, tableName }` | `{ procesamiento: "LOCAL_NATIVO_WORKER", formato, tabla, registros, columnas, esquema, preview }` |
 | `loadParquet` | `{ parquetData, tableName }` | idem (`formato: "PARQUET"`) |
-| `loadExcel` | `{ excelBuffer, tableName }` | idem (`formato: "EXCEL"`) |
+| `loadExcel` | `{ excelBuffer, tableName }` | idem (`formato: "EXCEL"`) + `hojas[]`, `hojas_totales`, `hojas_cargadas`, `hojas_omitidas`, `hojas_con_error` |
 | `executeQuery` | `{ sql }` | Array de filas normalizadas |
 
 Timeouts de la extensión: `initDuckDB` y cargas **120 s**, `executeQuery` **60 s**.
 La tabla destino siempre se sanea (`sanitizeTableName`) y se cita (`quoteIdentifier`).
+
+**Multi-hoja (Excel).** `loadExcel` itera `workbook.SheetNames` y registra **una tabla por
+pestaña**: la **hoja 0** conserva el nombre base recibido (`excel_data` por defecto, en
+compatibilidad con el plugin y las suites SQL) y el resto pasan a `excel_data_<hoja saneada>`
+(no alfanuméricos → `_`, prefijo `t_` si empieza por dígito, `hoja_<n>` si el nombre no aporta
+caracteres útiles y sufijo `_2`, `_3`… ante colisiones de saneado). **Si la hoja 0 no contiene
+datos, la tabla `excel_data` no se crea** (el widget sigue operativo: `result.tabla` pasa a apuntar
+a la primera tabla cargada). Las hojas vacías se **omiten**
+y los fallos de una pestaña se **reportan sin abortar** la carga del libro: solo se lanza error si
+el fichero es ilegible, no tiene hojas o ninguna contiene datos. El desglose viaja en
+`hojas[] = [{ nombre, tabla, registros, columnas, estado, motivo?, error?, advertencia? }]`, con
+`estado: "ok" | "omitida" | "error"` y motivos `hoja_vacia`, `hoja_sin_datos`, `hoja_error_tabla`,
+`hoja_error_vfs` (el `preview` de 10 filas se reserva a la hoja primaria).
 
 **③ ↔ ① (puente del plugin).** El iframe del plugin (`window.parent`, origen `*`) envía:
 
@@ -201,6 +215,10 @@ y la extensión responde al `event.source` (o hace *broadcast* a los iframes si 
   evitar `TypeError: Do not know how to serialize a BigInt` al cruzar `postMessage`.
 - **Aislamiento del iframe:** el plugin se ejecuta en un *sandbox* sin acceso a DuckDB, por lo que
   **todo** el cálculo ocurre en la ventana principal; el plugin solo transporta texto.
+- **Una tabla por pestaña:** `loadExcel` itera `workbook.SheetNames`, serializa cada hoja a un CSV
+  temporal en el VFS (`upload_<requestId>_<índice>.csv`), la materializa con `read_csv_auto` y borra
+  **todos** los temporales en el `finally`, dejando vivas únicamente las tablas. El fallo de una
+  pestaña se captura de forma aislada (descartando su tabla parcial) para no arrastrar la carga.
 
 ---
 
@@ -349,9 +367,17 @@ no recargues la página).
 
 ## ⚠️ Límites conocidos
 
-- **Una tabla a la vez:** cada carga recrea `excel_data` (`CREATE OR REPLACE TABLE`). Para trabajar con
-  dos archivos, usa `UNION` o reexporta la tabla desde la consola SQL antes de cargar el segundo.
-- **Excel de una sola hoja:** SheetJS procesa la **primera hoja** del libro.
+- **Una tabla por archivo y carga:** cada carga recrea `excel_data` (hoja 0; si no tiene datos, no se crea) y
+  crea/reemplaza `excel_data_<hoja saneada>` para el resto de pestañas, pero **no elimina** las
+  tablas sobrantes de una carga anterior (p. ej. `excel_data_Hoja2` de un libro previo con más
+  hojas). Para trabajar con dos archivos, usa `UNION` o reexporta la tabla desde la consola SQL.
+- **Excel multi-hoja con matices:** los identificadores SQL se sanean (no alfanuméricos → `_`,
+  prefijo `t_` si empiezan por dígito) y dos pestañas cuyos nombres colisionen tras el saneado
+  reciben sufijo `_2`, `_3`…; el nombre original se conserva siempre en `hojas[].nombre`.
+- **Hojas vacías o no interpretables:** se **omiten** (`estado: "omitida"`, motivos `hoja_vacia` /
+  `hoja_sin_datos`) o se **reportan** (`estado: "error"`, motivos `hoja_error_tabla` /
+  `hoja_error_vfs`) sin abortar la carga; el error global solo aparece si el fichero es ilegible,
+  no tiene hojas o ninguna pestaña contiene datos.
 - **Excel en memoria:** `.xlsx/.xls` se parsean completos con SheetJS antes de crear la tabla; para
   archivos muy grandes conviene convertir antes a **CSV o Parquet**, que se leen con el escaneo
   optimizado de DuckDB.
@@ -449,6 +475,7 @@ Estado verificado de esta entrega: `44/44` checks de Fase 5 y `25/25` de regresi
 | Fase 3B | Minimizar/maximizar, inyección de resultados al chat como **Markdown** |
 | Fase 5 | **UI móvil**: icono flotante de 50 px + widget **arrastrable** (ratón y táctil) |
 | Fase 6 | **Documentación y empaquetado**: README, guía de instalación y carpeta `plugin/` definitiva |
+| Multi-hoja | Iteración de `workbook.SheetNames`: **una tabla por pestaña** (`excel_data_<hoja saneada>`) con omisión/reporte tolerante de hojas vacías (`v1.0-phase-1b+multisheet`) |
 
 ---
 

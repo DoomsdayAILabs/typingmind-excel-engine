@@ -1,6 +1,6 @@
 ﻿"use strict";
 
-const WORKER_VERSION = "v1.0-phase-1b";
+const WORKER_VERSION = "v1.0-phase-1b+multisheet";
 const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
 
 importScripts('https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js');
@@ -319,6 +319,126 @@ async function loadParquet(parquetData, tableName, requestId) {
   return result;
 }
 
+// --- Soporte multi-hoja (Excel): una tabla independiente por pestaña ---
+
+/**
+ * Sufijo determinista para la tabla de una hoja. Aplica las mismas reglas de saneado
+ * que `sanitizeTableName` (no alfanuméricos -> "_", prefijo `t_` si empieza por dígito)
+ * y cae a la posición de la hoja cuando el nombre no aporta ningún carácter útil.
+ */
+function sanitizeSheetSuffix(sheetName, index) {
+  const limpio = String(sheetName ?? "")
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!limpio) {
+    return `hoja_${index + 1}`;
+  }
+
+  return /^[0-9]/.test(limpio) ? `t_${limpio}` : limpio;
+}
+
+/**
+ * Tabla destino de una hoja: `<base>_<sufijo>`. DuckDB compara identificadores sin
+ * distinguir mayúsculas, así que la deduplicación es case-insensitive y añade un
+ * contador incremental (_2, _3…) cuando dos pestañas colisionan tras sanearse.
+ */
+function buildSheetTableName(baseTable, sheetName, index, usados) {
+  const sufijo = sanitizeSheetSuffix(sheetName, index);
+  let candidato = `${baseTable}_${sufijo}`;
+  let contador = 1;
+
+  while (usados.has(candidato.toLowerCase())) {
+    contador += 1;
+    candidato = `${baseTable}_${sufijo}_${contador}`;
+  }
+
+  usados.add(candidato.toLowerCase());
+
+  return candidato;
+}
+
+/** Entrada homogénea de `hojas[]` para cualquier desenlace (ok / omitida / error). */
+function entradaHoja(nombreHoja, carga) {
+  const entrada = {
+    nombre: nombreHoja,
+    tabla: carga.tabla ?? null,
+    registros: carga.registros ?? 0,
+    columnas: carga.columnas ?? [],
+    estado: carga.estado
+  };
+
+  if (carga.motivo) entrada.motivo = carga.motivo;
+  if (carga.error) entrada.error = carga.error;
+  if (carga.estado === "ok" && !carga.registros) entrada.advertencia = "solo_cabeceras";
+
+  return entrada;
+}
+
+/** Descarta una tabla creada a medias sin enmascarar el error de la hoja. */
+async function descartarTablaParcial(tableName) {
+  try {
+    await conn.query(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)}`);
+  } catch (error) {
+    // Best-effort: la hoja ya se reporta como error y la limpieza no puede abortar la carga.
+  }
+}
+
+/**
+ * Materializa una pestaña como tabla propia (CSV temporal en el VFS -> read_csv_auto).
+ * Nunca lanza: devuelve el desenlace de esa hoja para que el resto del libro siga cargando.
+ * `sample_size=-1` + `ignore_errors=true` alinean la inferencia con la ruta CSV.
+ */
+async function materializarHojaExcel(worksheet, tableName, virtualName, ficherosVFS) {
+  const csvData = XLSX.utils.sheet_to_csv(worksheet);
+
+  if (!csvData || !csvData.trim()) {
+    return { estado: "omitida", motivo: "hoja_sin_datos" };
+  }
+
+  await db.registerFileBuffer(virtualName, new TextEncoder().encode(csvData));
+  ficherosVFS.push(virtualName);
+
+  const quotedTable = quoteIdentifier(tableName);
+  let tablaCreada = false;
+
+  try {
+    await conn.query(
+      `CREATE OR REPLACE TABLE ${quotedTable} AS
+       SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)}, sample_size=-1, ignore_errors=true)`
+    );
+    tablaCreada = true;
+
+    const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
+    const countRows = normalizeRows(countResult.toArray());
+    const registros = countRows[0]?.registros ?? 0;
+
+    const schemaResult = await conn.query(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_name = ${quoteStringLiteral(tableName)}
+       ORDER BY ordinal_position`
+    );
+
+    return {
+      estado: "ok",
+      tabla: tableName,
+      registros,
+      columnas: schemaResult.toArray().map(row => row.column_name)
+    };
+  } catch (error) {
+    if (tablaCreada) {
+      await descartarTablaParcial(tableName);
+    }
+
+    return {
+      estado: "error",
+      motivo: "hoja_error_tabla",
+      error: error?.message ? error.message : String(error)
+    };
+  }
+}
+
 async function loadExcel(excelBuffer, tableName, requestId) {
   if (!db || !conn) {
     throw new Error("DuckDB no está inicializado");
@@ -328,62 +448,104 @@ async function loadExcel(excelBuffer, tableName, requestId) {
     throw new Error("Excel data inválida");
   }
 
-  const virtualName = `upload_${requestId}.csv`;
-  let fileRegistered = false;
+  const ficherosVFS = [];
   let mainError = null;
   let result;
 
   try {
-    const workbook = XLSX.read(excelBuffer, { type: 'array' });
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
-    const csvData = XLSX.utils.sheet_to_csv(worksheet);
+    const workbook = XLSX.read(excelBuffer, { type: "array" });
+    const nombresHojas = Array.isArray(workbook?.SheetNames) ? workbook.SheetNames : [];
 
-    const encoder = new TextEncoder();
-    const csvBuffer = encoder.encode(csvData);
-    await db.registerFileBuffer(virtualName, csvBuffer);
-    fileRegistered = true;
+    if (nombresHojas.length === 0) {
+      throw new Error("El archivo Excel no contiene hojas");
+    }
 
-    const sanitizedTable = sanitizeTableName(tableName);
-    const quotedTable = quoteIdentifier(sanitizedTable);
+    const baseTable = sanitizeTableName(tableName);
+    const nombresUsados = new Set();
+    const hojas = [];
 
-    await conn.query(
-      `CREATE OR REPLACE TABLE ${quotedTable} AS SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)})`
-    );
+    // Se itera el libro en su orden natural, hoja a hoja y de forma secuencial.
+    for (let index = 0; index < nombresHojas.length; index++) {
+      const nombreHoja = nombresHojas[index];
+      const worksheet = workbook.Sheets ? workbook.Sheets[nombreHoja] : null;
 
-    const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
-    const countRows = normalizeRows(countResult.toArray());
-    const registros = countRows[0]?.registros ?? 0;
+      if (!worksheet || !worksheet["!ref"]) {
+        hojas.push(entradaHoja(nombreHoja, { estado: "omitida", motivo: "hoja_vacia" }));
+        continue;
+      }
+
+      // Variante A: la hoja 0 ocupa el nombre base recibido (excel_data) para conservar
+      // la compatibilidad con el plugin y las suites SQL; las hojas 1..N se registran
+      // como excel_data_<hoja saneada>. Si la hoja 0 está vacía o falla no existirá
+      // `excel_data`: el widget sigue operativo porque usa la primera tabla cargada.
+      const tablaDestino = index === 0
+        ? baseTable
+        : buildSheetTableName(baseTable, nombreHoja, index, nombresUsados);
+
+      let carga;
+
+      try {
+        carga = await materializarHojaExcel(
+          worksheet,
+          tablaDestino,
+          `upload_${requestId}_${index}.csv`,
+          ficherosVFS
+        );
+      } catch (error) {
+        // Red de seguridad: el fallo de una hoja jamás aborta la carga del libro.
+        carga = {
+          estado: "error",
+          motivo: "hoja_error_vfs",
+          error: error?.message ? error.message : String(error)
+        };
+      }
+
+      hojas.push(entradaHoja(nombreHoja, carga));
+    }
+
+    const hojasOk = hojas.filter((hoja) => hoja.estado === "ok");
+
+    if (hojasOk.length === 0) {
+      throw new Error("El archivo Excel no contiene hojas con datos");
+    }
+
+    const primaria = hojasOk[0];
+    const quotedPrimaria = quoteIdentifier(primaria.tabla);
 
     const schemaResult = await conn.query(
       `SELECT column_name, data_type
        FROM information_schema.columns
-       WHERE table_name = ${quoteStringLiteral(sanitizedTable)}
+       WHERE table_name = ${quoteStringLiteral(primaria.tabla)}
        ORDER BY ordinal_position`
     );
     const schemaRows = schemaResult.toArray();
 
-    const previewResult = await conn.query(`SELECT * FROM ${quotedTable} LIMIT 10`);
+    const previewResult = await conn.query(`SELECT * FROM ${quotedPrimaria} LIMIT 10`);
     const previewRows = previewResult.toArray();
 
     result = {
       procesamiento: "LOCAL_NATIVO_WORKER",
       formato: "EXCEL",
-      tabla: sanitizedTable,
-      registros,
+      tabla: primaria.tabla,
+      registros: primaria.registros,
       columnas: schemaRows.map(row => row.column_name),
       esquema: normalizeRows(schemaRows),
-      preview: normalizeRows(previewRows)
+      preview: normalizeRows(previewRows),
+      hojas,
+      hojas_totales: nombresHojas.length,
+      hojas_cargadas: hojasOk.length,
+      hojas_omitidas: hojas.filter(hoja => hoja.estado === "omitida").length,
+      hojas_con_error: hojas.filter(hoja => hoja.estado === "error").length
     };
   } catch (error) {
     mainError = error;
   } finally {
-    if (fileRegistered) {
+    for (const virtualName of ficherosVFS) {
       try {
         await db.dropFile(virtualName);
       } catch (unregisterError) {
         if (!mainError) {
-          throw unregisterError;
+          mainError = unregisterError;
         }
       }
     }
