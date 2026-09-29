@@ -333,7 +333,10 @@ IA:  [llama a query_excel_data({ sql_query: "SELECT * FROM excel_data LIMIT 1;" 
 ### Notas de SQL útiles
 
 - Las columnas se citan con **comillas dobles**: `SELECT "Cliente", SUM("TEUs") FROM excel_data`.
-- La tabla es siempre **`excel_data`** (se recrea con cada carga: `CREATE OR REPLACE TABLE`).
+- La tabla principal es **`excel_data`** (hoja 0 del libro; se recrea con cada carga: `CREATE OR REPLACE
+  TABLE`) y las pestañas secundarias se materializan como **`excel_data_<hoja saneada>`** (p. ej.
+  `excel_data_Ventas_2024`); para descubrirlas: `SELECT table_name FROM
+  information_schema.tables WHERE table_schema = 'main' ORDER BY table_name;` o `SHOW TABLES;`.
 - DuckDB acepta `SELECT * EXCLUDE (...)`, `PIVOT`, `QUALIFY`, `GROUP BY ALL`, `USING SAMPLE`,
   `READ_*` y funciones de ventana; cualquier consulta válida de DuckDB 1.29.0 funciona.
 - Antes de responder preguntas de la IA, un `SELECT * FROM excel_data LIMIT 1;` evita el 90 % de los
@@ -367,10 +370,13 @@ no recargues la página).
 
 ## ⚠️ Límites conocidos
 
-- **Una tabla por archivo y carga:** cada carga recrea `excel_data` (hoja 0; si no tiene datos, no se crea) y
-  crea/reemplaza `excel_data_<hoja saneada>` para el resto de pestañas, pero **no elimina** las
-  tablas sobrantes de una carga anterior (p. ej. `excel_data_Hoja2` de un libro previo con más
-  hojas). Para trabajar con dos archivos, usa `UNION` o reexporta la tabla desde la consola SQL.
+- **Convivencia de tablas dentro de un mismo libro:** cada carga recrea `excel_data` (hoja 0; si no
+  tiene datos, no se crea) y crea/reemplaza `excel_data_<hoja saneada>` para el resto de pestañas con
+  datos, de modo que **coexisten tantas tablas como pestañas útiles tenga el libro** (hoja 0 →
+  `excel_data`; hojas 1..N → `excel_data_<hoja>`) y se pueden cruzar entre sí con `JOIN`; en cambio
+  **no elimina** las tablas sobrantes de una carga anterior (p. ej. `excel_data_Hoja2` de un libro
+  previo con más hojas). Para trabajar con dos archivos, usa `UNION` o reexporta la tabla desde la
+  consola SQL.
 - **Excel multi-hoja con matices:** los identificadores SQL se sanean (no alfanuméricos → `_`,
   prefijo `t_` si empiezan por dígito) y dos pestañas cuyos nombres colisionen tras el saneado
   reciben sufijo `_2`, `_3`…; el nombre original se conserva siempre en `hojas[].nombre`.
