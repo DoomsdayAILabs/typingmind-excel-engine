@@ -21,7 +21,7 @@ async function query_excel_data(params) {
 
       const stripped = sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--.*$/gm, " ").trim();
       if (/\b(drop|alter|insert|update|delete|attach|copy|export|create|pragma\s+force)\b/i.test(stripped)) {
-        return resolve("Error: Solo se permiten consultas de lectura (SELECT, WITH, EXPLAIN).");
+        return resolve("Error: Solo se permiten consultas de lectura (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE).");
       }
 
       const reqId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 1000);

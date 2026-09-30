@@ -92,14 +92,17 @@ que añade un motor de base de datos analítico dentro de la propia interfaz:
 ### 🤖 IA autónoma (plugin)
 - **Function calling** con la herramienta `query_excel_data`.
 - **Solo lectura:** el plugin sanea el SQL (elimina comentarios) y bloquea `DROP`, `ALTER`, `INSERT`,
-  `UPDATE`, `DELETE`, `CREATE`, `COPY`, `ATTACH`, `PRAGMA FORCE`… Solo `SELECT`, `WITH` y `EXPLAIN`.
+  `UPDATE`, `DELETE`, `CREATE`, `COPY`, `ATTACH`, `PRAGMA FORCE`… Solo `SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`.
 - **Puente `postMessage`** en el canal `tm-excel-engine`: el iframe *sandbox* del plugin pide la
   consulta a la extensión y recibe las filas serializadas.
 - **Respuestas autolimitadas:** el plugin recorta a **50 filas** y devuelve Markdown escapado, para
   no saturar el contexto del modelo; reintegra errores claros (timeout, motor ausente, SQL inválido)
   como texto que el propio LLM puede corregir.
-- **Descubrimiento de esquema:** la descripción de la herramienta instruye al modelo a hacer primero
-  `SELECT * FROM excel_data LIMIT 1;` si no conoce las columnas.
+- **Descubrimiento de esquema:** la descripción de la herramienta instruye al modelo a listar primero las tablas con
+  `SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name;`
+  (alternativa `SHOW TABLES;`) y, después, el esquema de la tabla elegida con
+  `SELECT column_name, data_type FROM information_schema.columns WHERE lower(table_name) = lower('excel_data')
+  ORDER BY ordinal_position;` (alternativa `DESCRIBE excel_data;`).
 
 ---
 
@@ -330,7 +333,8 @@ python -m http.server 8080
 ```text
 Tú:  He cargado el Excel de TEUs. ¿Cuáles son los 5 clientes con más contenedores?
 
-IA:  [llama a query_excel_data({ sql_query: "SELECT * FROM excel_data LIMIT 1;" })]  ← descubre columnas
+IA:  [llama a query_excel_data({ sql_query: "SHOW TABLES;" })]  ← descubre las tablas disponibles
+     [llama a query_excel_data({ sql_query: 'DESCRIBE excel_data;' })]  ← descubre las columnas
      [llama a query_excel_data({ sql_query:
        'SELECT "Cliente", SUM("TEUs") AS total FROM excel_data
         GROUP BY 1 ORDER BY total DESC LIMIT 5;' })]

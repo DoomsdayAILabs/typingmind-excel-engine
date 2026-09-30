@@ -2,8 +2,9 @@
 
 const WORKER_VERSION = "v1.0-phase-1b+multisheet";
 const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+const SHEETJS_PACKAGE = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
 
-importScripts('https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js');
+importScripts(SHEETJS_PACKAGE);
 
 let db = null;
 let conn = null;
