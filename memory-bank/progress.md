@@ -9,7 +9,8 @@
 **v1.0 cerrado y desplegado.** Las dos suites headless automatizadas están en verde (44/44 y 25/25) y
 los archivos servidos por GitHub Pages son idénticos a `main`. El trabajo pendiente es de
 **documentación y dependencias**, no de funcionalidad. El repositorio está **limpio y sincronizado**
-(HEAD = `origin/main` = `425e5fd`).
+(commit de referencia del Memory Bank: `425e5fd`; el código de producto sigue en `5067b16` y los
+commits posteriores solo tocan documentación).
 
 ## Qué funciona (verificado)
 
