@@ -72,6 +72,18 @@ que añade un motor de base de datos analítico dentro de la propia interfaz:
   5 px para distinguir *clic* de *arrastre* y clamping al viewport.
 - **Modo icono flotante (FAB táctil):** al minimizar deja de ser una barra ancha y se convierte en un
   **botón circular de 50×50 px** con el emoji 📊; ideal para móvil. Un clic en el círculo lo expande.
+- **Selector de hojas (libros multi-hoja):** cuando el Excel trae **más de una pestaña con datos**, el
+  widget muestra una barra compacta con un **desplegable nativo** (`#tmee-sheets-select`) entre los
+  metadatos y la consola SQL. Cambiar de pestaña **no vuelve a subir el archivo**: la consola apunta a
+  la tabla ya materializada (`excel_data_<hoja>`) y refresca la vista previa al instante. Las pestañas
+  **omitidas** (vacías) o con error se listan **deshabilitadas** y etiquetadas, y el resumen
+  (`Hojas 3/5 · 2 vacías`) avisa en ámbar. Con CSV, Parquet o un Excel de una sola hoja la barra
+  **permanece oculta**, así que el widget se ve exactamente igual que antes.
+- **Metadatos de la hoja activa:** la fila de metadatos muestra **tabla**, **registros** y **columnas**
+  (`#tmee-meta-cols`) de la pestaña que estés viendo.
+- **Tu consulta manda:** al cambiar de hoja, si la consola SQL sigue con la plantilla automática se
+  reescribe para la tabla nueva; si ya la habías **editado**, solo se sustituye el nombre de tabla del
+  `FROM` y el resto de tu consulta se conserva intacto.
 - **Inyección al chat:** el botón **💬 Enviar a TM** escribe los resultados como **tabla Markdown**
   en el input de TypingMind (dispara el evento `input` nativo para que React sincronice su estado),
   coloca el cursor al final y **minimiza el widget automáticamente**.
@@ -306,6 +318,7 @@ python -m http.server 8080
 | **Cargar datos** | Arrastra el archivo sobre la zona punteada o pulsa *Seleccionar Archivo*. Acepta `.csv`, `.parquet`, `.xlsx`, `.xls`. |
 | **Consultar** | Edita el SQL en la consola y pulsa **▶ Ejecutar Consulta**. |
 | **Ver resultados** | La tabla muestra hasta **100 filas** con los tipos ya convertidos; cabecera fija al hacer scroll. |
+| **Cambiar de hoja** | Si el libro trae varias pestañas con datos, elige otra en el **desplegable de hojas** (entre los metadatos y la consola SQL): cambian la tabla activa, las columnas y la vista previa **sin recargar el archivo**. Si no había barra, el libro tiene una sola pestaña con datos. |
 | **Exportar** | **⬇️ CSV** descarga los resultados actuales (`tmee_resultados.csv`, UTF‑8 con comillas escapadas). |
 | **Enviar a la IA** | **💬 Enviar a TM** escribe la tabla Markdown en el input del chat (máx. 50 filas) y minimiza el widget. |
 | **Minimizar** | Un **clic** (o *tap*) en la cabecera → el widget se convierte en el **círculo flotante 📊**. |
@@ -417,6 +430,7 @@ typingmind-excel-engine/
 ├── test-widget.html                  ← DEV: simulador de TypingMind (widget real, sin IA)
 ├── test-duckdb-worker.html           ← DEV: banco de pruebas del Worker
 ├── tests/
+│   ├── fase6-multisheet-verificacion.html ← DEV: 85 checks (selector de hojas, multi-hoja en la UI)
 │   ├── fase5-verificacion.html       ← DEV: 44 checks (UI móvil, FAB, arrastre, inyección)
 │   ├── fase3b-verificacion.html      ← DEV: 25 checks de regresión (Markdown, CSV, puente)
 │   ├── fase3b-visual.html            ← DEV: capturas visuales (#min / #drag / #send)
@@ -435,6 +449,9 @@ Los tests son **páginas HTML autocontenidas** que publican su resultado en `doc
 (prefijo `RES:`), de modo que se pueden ejecutar sin dependencias ni frameworks:
 
 ```bash
+# Selector de hojas multi-hoja en la UI (barra, cambio de hoja, SQL conservador) → 85 checks
+node tests/run-headless.js tests/fase6-multisheet-verificacion.html
+
 # Verificación de la Fase 5 (UI móvil, FAB, arrastre, inyección) → 44 checks
 node tests/run-headless.js tests/fase5-verificacion.html
 
@@ -445,13 +462,17 @@ node tests/run-headless.js tests/fase3b-verificacion.html
 node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 ```
 
+- La suite de Fase 6 stubea `FileReader` (además de `fetch` y `Worker`): con headless y
+  `--virtual-time-budget` la lectura real de archivos no siempre termina dentro de la ventana medida,
+  lo que dejaba cargas a medias. El objeto de esa suite es la UI del selector, no el I/O del navegador.
 - `tests/run-headless.js` localiza Chrome o Edge automáticamente (o `CHROME_PATH`).
 - Capturas visuales: `tests/fase3b-visual.html`, `#min`, `#drag`, `#send`.
 - En headless las transiciones CSS no avanzan: el test de Fase 5 las desactiva para medir la
   geometría final del icono flotante (la declaración de la transición se verifica sobre el CSS).
 - Comprobación rápida de sintaxis: `node --check typingmind-excel-engine-v1.0.js`.
 
-Estado verificado de esta entrega: `44/44` checks de Fase 5 y `25/25` de regresión Fase 3B.
+Estado verificado de esta entrega: `85/85` checks de Fase 6 (selector de hojas multi-hoja en la UI),
+`44/44` de Fase 5 y `25/25` de regresión Fase 3B.
 
 ---
 
@@ -483,6 +504,7 @@ Estado verificado de esta entrega: `44/44` checks de Fase 5 y `25/25` de regresi
 | Fase 5 | **UI móvil**: icono flotante de 50 px + widget **arrastrable** (ratón y táctil) |
 | Fase 6 | **Documentación y empaquetado**: README, guía de instalación y carpeta `plugin/` definitiva |
 | Multi-hoja | Iteración de `workbook.SheetNames`: **una tabla por pestaña** (`excel_data_<hoja saneada>`) con omisión/reporte tolerante de hojas vacías (`v1.0-phase-1b+multisheet`) |
+| Fase 6 · UI | **Selector de hojas en el widget**: desplegable nativo para alternar entre las tablas `excel_data_<hoja>` sin recargar el archivo, sustitución conservadora del SQL editado y metadato de columnas de la hoja activa (`tests/fase6-multisheet-verificacion.html`, 85 checks) |
 
 ---
 

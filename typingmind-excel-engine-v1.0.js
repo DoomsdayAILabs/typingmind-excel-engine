@@ -1,14 +1,18 @@
 /**
- * TypingMind Excel Engine — v1.0.js (Fase 5: UI/UX Móvil + Widget Arrastrable)
+ * TypingMind Excel Engine — v1.0.js (Fase 6: Selector de hojas para libros multi-hoja)
  * Script principal de inyección del Widget visual e integración con DuckDB-WASM Worker.
  *
  * Cambios de esta fase:
- *  1) Minimizar ya no deja una barra ancha: el widget pasa a ser un icono circular
- *     flotante de 50x50 px (clase .tmee-minimized) que solo muestra el emoji 📊.
- *  2) El widget se puede arrastrar libremente por la pantalla desde la cabecera
- *     (o desde el icono cuando está minimizado), con soporte de ratón y táctil.
- *  3) Un clic/tap sin desplazamiento sobre la cabecera alterna minimizar/maximizar
- *     (se eliminó el botón ➖ #tmee-btn-toggle).
+ *  1) Los libros Excel multi-hoja exponen una barra compacta (.tmee-sheets-bar) entre los
+ *     metadatos y la consola SQL: un desplegable nativo (#tmee-sheets-select) con las
+ *     pestañas detectadas y un resumen "Hojas N/M · K vacías" (#tmee-sheets-summary).
+ *  2) Alternar de hoja NO recarga el archivo: solo cambia la tabla (excel_data_<hoja>) de
+ *     la consola SQL y se vuelve a consultar por el mismo Worker.
+ *  3) La sustitución de la consulta es conservadora: si el usuario editó la consola SQL
+ *     solo se reemplaza el token FROM <tabla>, sin tocar el resto de su consulta.
+ *
+ * Se conserva íntegro el comportamiento de la Fase 5: icono flotante de 50x50 px,
+ * arrastre por cabecera (ratón + táctil) y minimizado por clic/tap.
  */
 (function () {
   "use strict";
@@ -26,6 +30,11 @@
   const pending = new Map();
   let nextRequestId = 1;
   let ultimosResultados = [];
+
+  // --- Fase 6: estado del libro cargado y de la hoja visible ---
+  let libroActual = null;      // result de la última carga EXCEL multi-hoja (fuente de `hojas`)
+  let hojaActiva = null;       // nombre de tabla de la hoja mostrada en este momento
+  let plantillaSqlActual = ""; // última plantilla autogenerada (permite detectar si el usuario editó la consola)
 
   // --- Fase 5: estado del widget y del arrastre ---
   let rootEl = null;      // nodo #tmee-widget-root
@@ -156,8 +165,18 @@
       .tmee-dropzone { border: 2px dashed #4b5563; border-radius: 8px; padding: 20px 16px; text-align: center; cursor: pointer; background-color: rgba(255,255,255,0.02); transition: all 0.2s; }
       .tmee-dropzone:hover, .tmee-dropzone.dragover { border-color: #10b981; background-color: rgba(16,185,129,0.05); }
       .tmee-dropzone-btn { background-color: #374151; color: #f3f4f6; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; cursor: pointer; margin-top: 8px; }
+
       .tmee-result-container { display: none; flex-direction: column; gap: 12px; border-top: 1px solid #374151; padding-top: 12px; }
-      .tmee-meta-info { font-size: 12px; background-color: rgba(255,255,255,0.03); border: 1px solid #374151; border-radius: 6px; padding: 8px 12px; display: flex; justify-content: space-between; }
+      .tmee-meta-info { font-size: 12px; background-color: rgba(255,255,255,0.03); border: 1px solid #374151; border-radius: 6px; padding: 8px 12px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; }
+      /* Fase 6: barra de hojas de un libro multi-hoja (oculta salvo que haya más de una hoja con datos) */
+      .tmee-sheets-bar { display: flex; align-items: center; gap: 8px; }
+      .tmee-sheets-bar[hidden] { display: none; }
+      .tmee-select { flex: 1; min-width: 0; background-color: #111318; color: #f3f4f6; border: 1px solid #374151; border-radius: 6px; padding: 6px 8px; font-family: inherit; font-size: 11px; cursor: pointer; }
+      .tmee-select:focus { outline: none; border-color: #10b981; }
+      .tmee-select option:disabled { color: #6b7280; }
+      .tmee-sheets-summary { font-size: 10px; color: #9ca3af; white-space: nowrap; }
+      .tmee-sheets-summary.tmee-warn { color: #fbbf24; }
+      .tmee-sheets-summary.tmee-error { color: #f87171; }
       .tmee-sql-box { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
       .tmee-textarea { background: #111318; color: #10b981; border: 1px solid #374151; border-radius: 6px; padding: 10px; font-family: monospace; font-size: 12px; resize: vertical; min-height: 70px; width: 100%; box-sizing: border-box;}
       .tmee-textarea:focus { outline: none; border-color: #10b981; }
@@ -198,6 +217,12 @@
           <div class="tmee-meta-info">
             <span>Tabla: <strong style="color:#10b981" id="tmee-meta-table">-</strong></span>
             <span>Registros: <strong style="color:#10b981" id="tmee-meta-rows">-</strong></span>
+            <span>Columnas: <strong style="color:#10b981" id="tmee-meta-cols">-</strong></span>
+          </div>
+
+          <div class="tmee-sheets-bar" id="tmee-sheets-bar" hidden>
+            <select id="tmee-sheets-select" class="tmee-select" aria-label="Hoja del libro"></select>
+            <span class="tmee-sheets-summary" id="tmee-sheets-summary"></span>
           </div>
           
           <div class="tmee-sql-box">
@@ -250,6 +275,9 @@
     document.getElementById("tmee-btn-run-sql").addEventListener("click", ejecutarSQL);
     document.getElementById("tmee-btn-inject").addEventListener("click", inyectarEnChat);
     document.getElementById("tmee-btn-export").addEventListener("click", exportarCSV);
+
+    // Fase 6: el desplegable de hojas cambia la tabla activa sin recargar el archivo
+    document.getElementById("tmee-sheets-select").addEventListener("change", (e) => seleccionarHoja(e.target.value));
 
     // Fase 5: al girar el móvil o redimensionar, el widget se mantiene dentro de la pantalla
     window.addEventListener("resize", reajustarPosicion);
@@ -420,6 +448,8 @@
     const extension = file.name.split('.').pop().toLowerCase();
     const tableName = "excel_data";
     document.getElementById("tmee-result").style.display = "none";
+    // Fase 6: cada carga (o su fallo) descarta las hojas y la plantilla del libro anterior
+    resetearSelectorHojas();
     updateStatus("Cargando...", "pending");
 
     const reader = new FileReader();
@@ -447,14 +477,188 @@
     }
   }
 
+  // --- 4.1 Renderizado del resultado de una carga (Fase 6: libro + hoja activa) ---
+  /**
+   * Pinta el desenlace de una carga en el orden del widget: metadatos, selector de hojas
+   * (solo libros Excel multi-hoja), plantilla de consulta y vista previa de datos.
+   */
   function renderizarResultado(result) {
     document.getElementById("tmee-result").style.display = "flex";
-    document.getElementById("tmee-meta-table").textContent = result.tabla;
-    document.getElementById("tmee-meta-rows").textContent = Number(result.registros).toLocaleString();
 
-    const sqlInput = document.getElementById("tmee-sql-input");
-    sqlInput.value = `SELECT * FROM ${result.tabla} LIMIT 10;`;
+    // Fase 6: solo los libros Excel que traen `hojas[]` alimentan el selector
+    libroActual = (result.formato === "EXCEL" && Array.isArray(result.hojas)) ? result : null;
+    hojaActiva = result.tabla || null;
+
+    actualizarMetaHoja(result.tabla, result.registros, result.columnas);
+    renderizarSelectorHojas();
+
+    // Carga nueva: tablaAnterior = null fuerza la reescritura de la plantilla
+    aplicarPlantillaSql(result.tabla, null);
     ejecutarSQL();
+  }
+
+  /** Vuelca los metadatos de la hoja visible (nombre de tabla, registros y nº de columnas). */
+  function actualizarMetaHoja(tabla, registros, columnas) {
+    const tablaEl = document.getElementById("tmee-meta-table");
+    const filasEl = document.getElementById("tmee-meta-rows");
+    const colsEl = document.getElementById("tmee-meta-cols");
+
+    if (tablaEl) tablaEl.textContent = tabla ? String(tabla) : "-";
+
+    if (filasEl) {
+      const total = Number(registros);
+      filasEl.textContent = (registros === null || registros === undefined || Number.isNaN(total))
+        ? "-"
+        : total.toLocaleString();
+    }
+
+    if (colsEl) colsEl.textContent = Array.isArray(columnas) ? String(columnas.length) : "-";
+  }
+
+  // --- 4.2 Fase 6: selector de hojas del libro cargado ---
+
+  /**
+   * Dibuja la barra de hojas a partir de `result.hojas` del libro vigente.
+   * La barra permanece oculta salvo que el libro tenga más de una hoja con datos: así los
+   * CSV, los Parquet y los Excel de una sola hoja quedan exactamente igual que antes.
+   */
+  function renderizarSelectorHojas() {
+    const barra = document.getElementById("tmee-sheets-bar");
+    const select = document.getElementById("tmee-sheets-select");
+    const resumen = document.getElementById("tmee-sheets-summary");
+    if (!barra || !select || !resumen) return;
+
+    const hojas = (libroActual && Array.isArray(libroActual.hojas)) ? libroActual.hojas : [];
+    const cargadas = hojas.filter((hoja) => hoja.estado === "ok" && hoja.tabla);
+
+    if (cargadas.length <= 1) {
+      ocultarSelectorHojas();
+      return;
+    }
+
+    select.innerHTML = "";
+    hojas.forEach((hoja, indice) => {
+      const opcion = document.createElement("option");
+      opcion.textContent = etiquetaHoja(hoja, indice);
+
+      if (hoja.estado === "ok" && hoja.tabla) {
+        opcion.value = hoja.tabla;
+        if (hoja.tabla === hojaActiva) opcion.selected = true;
+      } else {
+        // Las hojas omitidas o con error se listan como aviso, pero no son seleccionables
+        opcion.disabled = true;
+      }
+
+      select.appendChild(opcion);
+    });
+
+    const omitidas = hojas.filter((hoja) => hoja.estado === "omitida").length;
+    const conError = hojas.filter((hoja) => hoja.estado === "error").length;
+    const partes = [`Hojas ${cargadas.length}/${hojas.length}`];
+    if (omitidas) partes.push(`${omitidas} vacía${omitidas === 1 ? "" : "s"}`);
+    if (conError) partes.push(`${conError} con error`);
+
+    resumen.textContent = partes.join(" · ");
+    resumen.className = "tmee-sheets-summary" + (conError ? " tmee-error" : omitidas ? " tmee-warn" : "");
+    resumen.title = hojas.map((hoja) => `${hoja.nombre}: ${descripcionEstadoHoja(hoja)}`).join("\n");
+    barra.hidden = false;
+  }
+
+  /** Etiqueta legible de una pestaña dentro del desplegable de hojas. */
+  function etiquetaHoja(hoja, indice) {
+    const nombre = (hoja && hoja.nombre) ? String(hoja.nombre) : `Hoja ${indice + 1}`;
+
+    if (!hoja || hoja.estado === "omitida") {
+      return `${nombre} · ${(hoja && hoja.motivo === "hoja_sin_datos") ? "omitida (sin datos)" : "omitida (vacía)"}`;
+    }
+    if (hoja.estado === "error") return `${nombre} · error`;
+
+    const filas = Number(hoja.registros) || 0;
+    return filas === 0 ? `${nombre} · solo cabeceras` : `${nombre} · ${filas.toLocaleString()} filas`;
+  }
+
+  /** Desenlace de una hoja descrito en texto (tooltip del resumen). */
+  function descripcionEstadoHoja(hoja) {
+    if (!hoja || !hoja.estado) return "sin información";
+    if (hoja.estado === "omitida") return hoja.motivo === "hoja_sin_datos" ? "omitida (sin datos)" : "omitida (vacía)";
+    if (hoja.estado === "error") return "error" + (hoja.error ? `: ${hoja.error}` : "");
+    if (hoja.advertencia === "solo_cabeceras") return "cargada (solo cabeceras)";
+    return `cargada (${(hoja.columnas || []).length} columnas)`;
+  }
+
+  /** Oculta la barra de hojas y descarta las opciones dibujadas. */
+  function ocultarSelectorHojas() {
+    const barra = document.getElementById("tmee-sheets-bar");
+    const select = document.getElementById("tmee-sheets-select");
+    const resumen = document.getElementById("tmee-sheets-summary");
+
+    if (select) select.innerHTML = "";
+    if (resumen) {
+      resumen.textContent = "";
+      resumen.className = "tmee-sheets-summary";
+      resumen.title = "";
+    }
+    if (barra) barra.hidden = true;
+  }
+
+  /** Reinicia el estado del libro; se invoca al empezar cualquier carga nueva. */
+  function resetearSelectorHojas() {
+    libroActual = null;
+    hojaActiva = null;
+    plantillaSqlActual = "";
+    ocultarSelectorHojas();
+  }
+
+  /**
+   * Cambia la hoja visible sin recargar el archivo: los metadatos y la vista previa se
+   * alimentan de la tabla que ese libro ya materializó en DuckDB (excel_data_<hoja>).
+   * Solo se aceptan hojas con estado "ok"; las omitidas y las que fallaron se ignoran.
+   */
+  function seleccionarHoja(tabla) {
+    if (!libroActual || !tabla || tabla === hojaActiva) return;
+
+    const hoja = libroActual.hojas.find((candidata) => candidata.estado === "ok" && candidata.tabla === tabla);
+    if (!hoja) return;
+
+    const anterior = hojaActiva;
+    hojaActiva = tabla;
+
+    actualizarMetaHoja(hoja.tabla, hoja.registros, hoja.columnas);
+    aplicarPlantillaSql(tabla, anterior);
+    ejecutarSQL();
+  }
+
+  /**
+   * Fija la consola SQL sobre una tabla y guarda la plantilla vigente.
+   * @param {string} tablaNueva tabla que pasa a estar activa.
+   * @param {?string} tablaAnterior tabla de la que se viene; null en una carga nueva.
+   *
+   * Regla conservadora aprobada: si el usuario editó la consulta, solo se sustituye el
+   * token `FROM <tabla anterior>`, de modo que su SELECT completo se conserva intacto.
+   */
+  function aplicarPlantillaSql(tablaNueva, tablaAnterior = null) {
+    const sqlInput = document.getElementById("tmee-sql-input");
+    const plantilla = `SELECT * FROM ${tablaNueva} LIMIT 10;`;
+
+    if (sqlInput) {
+      const actual = sqlInput.value.trim();
+      const sinEditar = !actual || actual === plantillaSqlActual;
+
+      if (!tablaAnterior || sinEditar) {
+        sqlInput.value = plantilla;
+      } else {
+        const patron = new RegExp(`(FROM\\s+)${escaparRegex(tablaAnterior)}(?=$|[^A-Za-z0-9_])`, "gi");
+        const conSustitucion = sqlInput.value.replace(patron, `$1${tablaNueva}`);
+        if (conSustitucion !== sqlInput.value) sqlInput.value = conSustitucion;
+      }
+    }
+
+    plantillaSqlActual = plantilla;
+  }
+
+  /** Escapa un texto para poder usarlo como literal dentro de una RegExp. */
+  function escaparRegex(texto) {
+    return String(texto).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   // --- 5. Motor SQL Dinámico Manual ---

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verificación Fase 6 (selector de hojas multi-hoja)</title>
+  <style>body { background: #111318; color: #f3f4f6; font-family: sans-serif; }</style>
+</head>
+<body>
+  <h1>Verificación Fase 6 (selector de hojas)</h1>
+
+  <!-- Simulación del chat de TypingMind -->
+  <textarea data-testid="chat-input" placeholder="Type a message"></textarea>
+
+  <div id="verify-results"></div>
+
+  <script>
+    // --- Stubs previos a la carga del motor (Worker + fetch) ---
+    window.__alerts = [];
+    window.__sent = [];                 // peticiones enviadas al Worker (type + sql)
+    window.__mockRows = [{ id: 1, producto: "teclado" }, { id: 2, producto: "ratón" }];
+    window.__mockFail = false;          // fuerza el fallo de la próxima carga
+    window.__fixture = null;            // result que devuelve la próxima carga
+
+    window.alert = function (msg) { window.__alerts.push(String(msg)); };
+
+    window.fetch = async function () {
+      return { ok: true, text: async () => "// worker mock (verificación Fase 6)" };
+    };
+
+    window.Worker = class MockWorker {
+      constructor(url) { window.__workerUrl = String(url); }
+      postMessage(msg) {
+        window.__sent.push({ type: msg.type, sql: msg.sql || "" });
+        const responder = (success, data) => setTimeout(() => {
+          if (this.onmessage) {
+            this.onmessage({
+              data: {
+                requestId: msg.requestId,
+                success: success,
+                data: data,
+                error: success ? undefined : "fallo simulado (verificación Fase 6)"
+              }
+            });
+          }
+        }, 5);
+
+        if (msg.type === "initDuckDB") responder(true, { ready: true });
+        else if (msg.type === "executeQuery") responder(true, window.__mockRows);
+        else if (msg.type === "loadExcel" || msg.type === "loadCSV" || msg.type === "loadParquet") {
+          if (window.__mockFail) responder(false, undefined);
+          else responder(true, window.__fixture);
+        }
+      }
+    };
+
+    // FileReader determinista: el objeto de esta suite es la UI del widget (selector de
+    // hojas), no el I/O del navegador. Con el FileReader real, headless + virtual-time no
+    // garantiza que la lectura termine dentro de la ventana medida, así que algunas cargas
+    // quedaban a medias ("Cargando...") y ensuciaban los checks. Se stubea como fetch/Worker.
+    window.FileReader = class MockFileReader {
+      readAsArrayBuffer() { this.result = new ArrayBuffer(8); this.onload({ target: this }); }
+      readAsText() { this.result = "id,nota\n1,a\n2,b"; this.onload({ target: this }); }
+    };
+  </script>
+
+  <!-- Ejecutar: node tests/run-headless.js tests/fase6-multisheet-verificacion.html --all
+       El test publica su resultado en document.title con el prefijo "RES:" (JSON URL-encoded). -->
+  <script src="../typingmind-excel-engine-v1.0.js"></script>
+
+  <script>
+    const resultados = { checks: [], logs: [] };
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+    const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    const $ = (id) => document.getElementById(id);
+    const root = () => $("tmee-widget-root");
+    const cabecera = () => $("tmee-header");
+    const body = () => $("tmee-body");
+    const barra = () => $("tmee-sheets-bar");
+    const select = () => $("tmee-sheets-select");
+    const resumen = () => $("tmee-sheets-summary");
+    const opciones = () => Array.from(select().options);
+    const anchoBarra = () => barra().getBoundingClientRect().width;
+
+    const envios = (tipo) => window.__sent.filter((m) => m.type === tipo);
+    const totalCargas = () => envios("loadExcel").length + envios("loadCSV").length + envios("loadParquet").length;
+    const ultimaSql = () => {
+      const lista = envios("executeQuery");
+      return lista.length ? lista[lista.length - 1].sql : null;
+    };
+
+    /** Datasets que el Worker mockeado devuelve para cada tipo de carga. */
+    const FIXTURE_CSV = {
+      procesamiento: "LOCAL_NATIVO_WORKER", formato: "CSV", tabla: "excel_data",
+      registros: 12, columnas: ["id", "nota"], esquema: [], preview: []
+    };
+    const FIXTURE_PARQUET = Object.assign({}, FIXTURE_CSV, { formato: "PARQUET" });
+    const FIXTURE_UNA_HOJA = {
+      procesamiento: "LOCAL_NATIVO_WORKER", formato: "EXCEL", tabla: "excel_data",
+      registros: 5, columnas: ["a"], esquema: [], preview: [],
+      hojas: [{ nombre: "Datos", tabla: "excel_data", registros: 5, columnas: ["a"], estado: "ok" }],
+      hojas_totales: 1, hojas_cargadas: 1, hojas_omitidas: 0, hojas_con_error: 0
+    };
+    // Libro de 5 pestañas: 2 omitidas (una vacía y otra sin datos), 1 "solo cabeceras" y la
+    // hoja 0 omitida, de modo que la tabla primaria NO es la primera pestaña del libro.
+    const FIXTURE_MULTI = {
+      procesamiento: "LOCAL_NATIVO_WORKER", formato: "EXCEL",
+      tabla: "excel_data_Ventas", registros: 42,
+      columnas: ["id", "producto", "importe", "fecha"], esquema: [], preview: [],
+      hojas: [
+        { nombre: "Portada", tabla: null, registros: 0, columnas: [], estado: "omitida", motivo: "hoja_vacia" },
+        { nombre: "Ventas", tabla: "excel_data_Ventas", registros: 42, columnas: ["id", "producto", "importe", "fecha"], estado: "ok" },
+        { nombre: "Clientes", tabla: "excel_data_Clientes", registros: 7, columnas: ["id", "nombre", "pais", "alta"], estado: "ok" },
+        { nombre: "Aux", tabla: null, registros: 0, columnas: [], estado: "omitida", motivo: "hoja_sin_datos" },
+        { nombre: "Resumen", tabla: "excel_data_Resumen", registros: 0, columnas: ["metric", "value"], estado: "ok", advertencia: "solo_cabeceras" }
+      ],
+      hojas_totales: 5, hojas_cargadas: 3, hojas_omitidas: 2, hojas_con_error: 0
+    };
+
+    /** Carga un archivo disparando el input real (FileReader real + Worker mockeado). */
+    async function cargar(nombre, fixture, fallo) {
+      window.__fixture = fixture;
+      window.__mockFail = !!fallo;
+      const input = $("tmee-file-input");
+      const archivo = new File([new Uint8Array([1, 2, 3, 4])], nombre);
+      Object.defineProperty(input, "files", { value: [archivo], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await esperar(120);
+    }
+
+    function raton(tipo, x, y, objetivo) {
+      (objetivo || document).dispatchEvent(new MouseEvent(tipo, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    }
+
+    function clicRatonCabecera() {
+      const r = cabecera().getBoundingClientRect();
+      const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2);
+      raton("mousedown", x, y, cabecera());
+      raton("mouseup", x, y, cabecera());
+    }
+
+    /** Cambia la hoja activa igual que lo haría el usuario en el desplegable. */
+    async function elegirHoja(tabla) {
+      select().value = tabla;
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+      await esperar(80);
+    }
+  </script>
+
+  <script>
+    (async function run() {
+      await esperar(300);
+
+      // Las transiciones CSS no avanzan en headless: se desactivan para medir geometría final
+      const sinTransiciones = document.createElement("style");
+      sinTransiciones.textContent = "#tmee-widget-root, .tmee-header, .tmee-body { transition: none !important; }";
+      document.head.appendChild(sinTransiciones);
+
+      // --- 0. Estructura base del widget con la barra de hojas ---
+      check("Widget inyectado", !!root());
+      check("Barra de hojas presente en el DOM", !!barra());
+      check("Barra oculta al arrancar (sin libro cargado)", barra().hidden === true);
+      check("Desplegable de hojas presente", !!select() && select().tagName === "SELECT");
+      check("Resumen de hojas presente", !!resumen());
+      check("Metadato de columnas presente y en guion", !!$("tmee-meta-cols") && $("tmee-meta-cols").textContent === "-");
+      check("La barra vive dentro de .tmee-body (el FAB de 50px queda intacto)", body().contains(barra()));
+
+      const metaInfo = document.querySelector(".tmee-meta-info");
+      const sqlBox = document.querySelector(".tmee-sql-box");
+      check("Orden DOM: metadatos -> barra de hojas -> consola SQL",
+        (metaInfo.compareDocumentPosition(barra()) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+        (barra().compareDocumentPosition(sqlBox) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+
+      // --- 1. Visibilidad condicional: CSV, Parquet y Excel de una sola hoja ---
+      await cargar("datos.csv", FIXTURE_CSV);
+      check("CSV: barra oculta", barra().hidden === true);
+      check("CSV: sin opciones colgando", select().options.length === 0);
+      check("CSV: metadatos de la tabla base", $("tmee-meta-table").textContent === "excel_data");
+      check("CSV: registros en los metadatos", $("tmee-meta-rows").textContent === "12");
+      check("CSV: columnas contadas (nuevo metadato)", $("tmee-meta-cols").textContent === "2", $("tmee-meta-cols").textContent);
+
+      await cargar("datos.parquet", FIXTURE_PARQUET);
+      check("Parquet: barra oculta", barra().hidden === true);
+
+      await cargar("una-hoja.xlsx", FIXTURE_UNA_HOJA);
+      check("Excel de 1 hoja con datos: barra oculta", barra().hidden === true);
+      check("Excel de 1 hoja: sin opciones colgando", select().options.length === 0);
+      check("Excel de 1 hoja: metadatos normales", $("tmee-meta-table").textContent === "excel_data" && $("tmee-meta-cols").textContent === "1");
+
+      // --- 2. Libro multi-hoja: barra visible y opciones pobladas ---
+      const loadExcelPrevios = envios("loadExcel").length;
+      await cargar("libro.xlsx", FIXTURE_MULTI);
+      check("Multi-hoja: barra visible", barra().hidden === false);
+      check("Multi-hoja: una opción por pestaña", opciones().length === 5, opciones().length);
+      check("Multi-hoja: 3 hojas seleccionables", opciones().filter((o) => !o.disabled).length === 3);
+      check("Multi-hoja: 2 hojas deshabilitadas", opciones().filter((o) => o.disabled).length === 2);
+
+      const etiquetas = opciones().map((o) => o.textContent);
+      const valores = opciones().filter((o) => !o.disabled).map((o) => o.value);
+      check("Multi-hoja: valores = tablas secundarias del libro",
+        valores.join(",") === "excel_data_Ventas,excel_data_Clientes,excel_data_Resumen", valores.join(","));
+      check("Etiqueta de hoja cargada con nº de filas", etiquetas[1] === "Ventas · 42 filas", etiquetas[1]);
+      check("Etiqueta de hoja omitida por vacía", etiquetas[0] === "Portada · omitida (vacía)", etiquetas[0]);
+      check("Etiqueta de hoja omitida sin datos", etiquetas[3] === "Aux · omitida (sin datos)", etiquetas[3]);
+      check("Etiqueta de hoja 'solo cabeceras'", etiquetas[4] === "Resumen · solo cabeceras", etiquetas[4]);
+
+      check("Resumen del libro: hojas cargadas y omitidas",
+        resumen().textContent === "Hojas 3/5 · 2 vacías", resumen().textContent);
+      check("Resumen en ámbar cuando hay hojas omitidas", resumen().classList.contains("tmee-warn"), resumen().className);
+      check("Tooltip del resumen con el desenlace por hoja",
+        /Portada: omitida \(vacía\)/.test(resumen().title) && /Ventas: cargada \(4 columnas\)/.test(resumen().title) &&
+        /Resumen: cargada \(solo cabeceras\)/.test(resumen().title), resumen().title.replace(/\n/g, " | "));
+
+      // --- 3. Selección inicial = tabla primaria del libro (no necesariamente la hoja 0) ---
+      check("Selección inicial = tabla primaria del libro", select().value === "excel_data_Ventas", select().value);
+      check("La opción activa queda marcada en el desplegable",
+        !!opciones().find((o) => o.selected && o.value === "excel_data_Ventas"));
+      check("Metadatos: tabla activa", $("tmee-meta-table").textContent === "excel_data_Ventas");
+      check("Metadatos: registros de la hoja activa", $("tmee-meta-rows").textContent === "42", $("tmee-meta-rows").textContent);
+      check("Metadatos: columnas de la hoja activa", $("tmee-meta-cols").textContent === "4");
+      check("Plantilla SQL inicial de la hoja activa",
+        $("tmee-sql-input").value === "SELECT * FROM excel_data_Ventas LIMIT 10;", $("tmee-sql-input").value);
+      check("Vista previa consultada en la hoja activa",
+        ultimaSql() === "SELECT * FROM excel_data_Ventas LIMIT 10;", ultimaSql());
+      check("Vista previa repintada con los resultados",
+        $("tmee-results-title").textContent === "Resultados (2 filas)", $("tmee-results-title").textContent);
+      check("El libro se carga una sola vez", envios("loadExcel").length === loadExcelPrevios + 1, envios("loadExcel").length);
+
+      // --- 4. Cambio de hoja sin recargar el archivo ---
+      const consultasAntesCambio = envios("executeQuery").length;
+      await elegirHoja("excel_data_Clientes");
+      check("Cambio de hoja: metadatos de tabla", $("tmee-meta-table").textContent === "excel_data_Clientes");
+      check("Cambio de hoja: registros", $("tmee-meta-rows").textContent === "7", $("tmee-meta-rows").textContent);
+      check("Cambio de hoja: columnas", $("tmee-meta-cols").textContent === "4");
+      check("Cambio de hoja: plantilla SQL de la tabla secundaria",
+        $("tmee-sql-input").value === "SELECT * FROM excel_data_Clientes LIMIT 10;", $("tmee-sql-input").value);
+      check("Cambio de hoja: la vista previa se reconsulta en la tabla nueva",
+        ultimaSql() === "SELECT * FROM excel_data_Clientes LIMIT 10;", ultimaSql());
+      check("Cambio de hoja: exactamente una consulta nueva al Worker",
+        envios("executeQuery").length === consultasAntesCambio + 1, envios("executeQuery").length - consultasAntesCambio);
+      check("Cambio de hoja: el archivo NO se vuelve a cargar",
+        envios("loadExcel").length === loadExcelPrevios + 1 && totalCargas() === 4, totalCargas());
+
+      await elegirHoja("excel_data_Ventas");
+      check("Volver a una hoja anterior reescribe la plantilla (sin editar)",
+        $("tmee-sql-input").value === "SELECT * FROM excel_data_Ventas LIMIT 10;", $("tmee-sql-input").value);
+      check("Volver a una hoja anterior actualiza los metadatos",
+        $("tmee-meta-rows").textContent === "42" && $("tmee-meta-cols").textContent === "4");
+      check("Volver a una hoja anterior reconsulta el Worker",
+        ultimaSql() === "SELECT * FROM excel_data_Ventas LIMIT 10;", ultimaSql());
+
+      // --- 5. La consulta editada del usuario se respeta (sustitución conservadora) ---
+      $("tmee-sql-input").value = "SELECT id, producto FROM excel_data_Ventas WHERE producto != 'x' ORDER BY id LIMIT 5;";
+      await elegirHoja("excel_data_Clientes");
+      check("Consulta editada: solo se sustituye el token FROM",
+        $("tmee-sql-input").value === "SELECT id, producto FROM excel_data_Clientes WHERE producto != 'x' ORDER BY id LIMIT 5;",
+        $("tmee-sql-input").value);
+      check("Consulta editada: se ejecuta tal cual sobre la hoja nueva",
+        ultimaSql() === $("tmee-sql-input").value, ultimaSql());
+      check("Consulta editada: metadatos apuntando a la hoja nueva", $("tmee-meta-table").textContent === "excel_data_Clientes");
+
+      $("tmee-sql-input").value = 'SELECT * FROM "excel_data_Clientes" LIMIT 3;';
+      await elegirHoja("excel_data_Resumen");
+      check("Consulta con la tabla entrecomillada: no se altera",
+        $("tmee-sql-input").value === 'SELECT * FROM "excel_data_Clientes" LIMIT 3;', $("tmee-sql-input").value);
+      check("Aun respetando la consulta, los metadatos sí cambian", $("tmee-meta-table").textContent === "excel_data_Resumen");
+      check("Hoja 'solo cabeceras': registros a 0 y columnas contadas",
+        $("tmee-meta-rows").textContent === "0" && $("tmee-meta-cols").textContent === "2",
+        $("tmee-meta-rows").textContent + " filas / " + $("tmee-meta-cols").textContent + " cols");
+
+      // --- 6. Selecciones vacías o ajenas al libro ---
+      const consultasAntesInvalidas = envios("executeQuery").length;
+      select().value = "";
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+      await esperar(40);
+      check("Selección vacía ignorada (sin consulta)", envios("executeQuery").length === consultasAntesInvalidas);
+      check("Selección vacía: la hoja activa no cambia", $("tmee-meta-table").textContent === "excel_data_Resumen");
+
+      const intrusa = document.createElement("option");
+      intrusa.textContent = "intrusa · 1 filas";
+      intrusa.value = "tabla_inexistente";
+      select().appendChild(intrusa);
+      select().value = "tabla_inexistente";
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+      await esperar(40);
+      check("Tabla ajena al libro ignorada (no se consulta)", envios("executeQuery").length === consultasAntesInvalidas);
+      intrusa.remove();
+
+      await elegirHoja("excel_data_Resumen");
+      check("Reelegir la hoja ya activa no lanza otra consulta", envios("executeQuery").length === consultasAntesInvalidas);
+
+      // --- 7. Reinicio del selector entre cargas (libro nuevo y carga fallida) ---
+      await cargar("otro.csv", FIXTURE_CSV);
+      check("Archivo no Excel tras un libro: barra oculta", barra().hidden === true);
+      check("Archivo no Excel tras un libro: opciones descartadas", select().options.length === 0);
+      check("Archivo no Excel tras un libro: resumen limpiado", resumen().textContent === "" && resumen().title === "");
+      check("Archivo no Excel: sin clases de aviso residuales", resumen().className === "tmee-sheets-summary", resumen().className);
+      check("Archivo no Excel tras un libro: plantilla de la tabla nueva",
+        $("tmee-sql-input").value === "SELECT * FROM excel_data LIMIT 10;", $("tmee-sql-input").value);
+
+      await cargar("libro.xlsx", FIXTURE_MULTI);
+      check("Segundo libro multi-hoja: barra visible y repoblada", barra().hidden === false && opciones().length === 5);
+      check("Segundo libro: la selección inicial vuelve a ser la tabla primaria",
+        select().value === "excel_data_Ventas", select().value);
+
+      await cargar("roto.xlsx", null, true);
+      check("Carga fallida: barra oculta y hojas del libro anterior descartadas",
+        barra().hidden === true && select().options.length === 0);
+      check("Carga fallida: contenedor de resultados oculto", getComputedStyle($("tmee-result")).display === "none");
+      check("Carga fallida: estado en error", $("tmee-status").textContent === "Error de archivo", $("tmee-status").textContent);
+
+      // --- 8. FAB de 50x50 px y arrastre de cabecera intactos (Fase 5) ---
+      await cargar("libro.xlsx", FIXTURE_MULTI);
+      check("Barra visible y medible antes de minimizar",
+        barra().hidden === false && anchoBarra() > 0, Math.round(anchoBarra()));
+      const altoExpandido = Math.round(body().getBoundingClientRect().height);
+
+      clicRatonCabecera();
+      await esperar(80);
+      check("Minimizado: icono circular de 50x50 px",
+        getComputedStyle(root()).width === "50px" && getComputedStyle(root()).height === "50px",
+        getComputedStyle(root()).width + "x" + getComputedStyle(root()).height);
+      check("Minimizado: el cuerpo no ocupa espacio (la barra se va con él)",
+        Math.round(body().getBoundingClientRect().height) === 0, Math.round(body().getBoundingClientRect().height));
+      check("Minimizado: la barra de hojas tampoco ocupa espacio", anchoBarra() === 0, Math.round(anchoBarra()));
+
+      clicRatonCabecera();
+      await esperar(80);
+      check("Expandido: la barra de hojas vuelve a medirse",
+        barra().hidden === false && anchoBarra() > 0, Math.round(anchoBarra()));
+      check("Expandido: el cuerpo recupera su altura",
+        Math.abs(Math.round(body().getBoundingClientRect().height) - altoExpandido) <= 1,
+        Math.round(body().getBoundingClientRect().height) + " vs " + altoExpandido);
+      check("Minimizar/expandir no altera la hoja activa",
+        select().value === "excel_data_Ventas" && $("tmee-meta-rows").textContent === "42", select().value);
+
+      const rCab = cabecera().getBoundingClientRect();
+      raton("mousedown", Math.round(rCab.left + 30), Math.round(rCab.top + 10), cabecera());
+      raton("mousemove", Math.round(rCab.left + 130), Math.round(rCab.top + 60));
+      raton("mouseup", Math.round(rCab.left + 130), Math.round(rCab.top + 60));
+      await esperar(40);
+      check("Fase 5 intacta: la cabecera sigue arrastrando el widget",
+        !!root().style.left && !!root().style.top, root().style.left + "/" + root().style.top);
+      check("El arrastre no interfiere con el selector de hojas",
+        opciones().length === 5 && !root().classList.contains("tmee-minimized"));
+
+      // --- 9. Reglas CSS de la Fase 6 y no regresión de las de Fase 5 ---
+      const css = $("tmee-widget-styles").textContent;
+      check("CSS: la barra se oculta por atributo hidden", css.includes(".tmee-sheets-bar[hidden] { display: none; }"));
+      check("CSS: desplegable nativo estilizado", css.includes(".tmee-select { flex: 1; min-width: 0;"));
+      check("CSS: resumen en ámbar", css.includes(".tmee-sheets-summary.tmee-warn { color: #fbbf24; }"));
+      check("CSS: resumen en rojo", css.includes(".tmee-sheets-summary.tmee-error { color: #f87171; }"));
+      check("CSS: metadatos con wrap para los tres campos", /\.tmee-meta-info \{[^}]*flex-wrap: wrap;/.test(css));
+      check("Fase 5 intacta: FAB de 50px en el CSS",
+        css.includes(".tmee-minimized { width: 50px !important; height: 50px !important; border-radius: 25px !important;"));
+      check("Fase 5 intacta: el modo icono oculta cuerpo, badge y título",
+        css.includes(".tmee-minimized .tmee-body") && css.includes(".tmee-minimized .tmee-status-badge") &&
+        css.includes(".tmee-minimized .tmee-title-text"));
+      check("Fase 5 intacta: cabecera con user-select none y touch-action none",
+        css.includes("-webkit-user-select: none; user-select: none; touch-action: none;"));
+
+      resultados.logs.push("checks=" + resultados.checks.length);
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados);
+      document.title = "RES:" + encodeURIComponent(JSON.stringify(resultados));
+    })();
+  </script>
+
+</body>
+</html>
+
