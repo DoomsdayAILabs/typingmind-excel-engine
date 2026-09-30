@@ -60,7 +60,7 @@ para consultarlo. El archivo no viaja; solo viaja el resultado de la consulta.
 | Síntoma | Causa esperada | Manejo previsto |
 |---|---|---|
 | No aparece el widget | Extensión no guardada/recargada, bloqueador de scripts | Recargar TypingMind, revisar consola |
-| "Fallo al iniciar: Failed to fetch" | `WORKER_PATH` inaccesible | Verificar URL de GitHub Pages / constante (línea 16) |
+| "Fallo al iniciar: Failed to fetch" | `WORKER_PATH` inaccesible | Verificar URL de GitHub Pages / constante (línea 20) |
 | "Error en Worker" | CDN bloqueado (red corporativa) | Permitir `cdn.jsdelivr.net` o autoalojar bundles |
 | La IA dice que el motor no responde | Extensión ausente, plugin desactivado o sin archivo cargado | Cargar archivo + activar plugin (timeout del plugin: 30 s) |
 | El modelo intenta escribir datos | Guardrail de solo lectura | Pedirle una consulta de lectura |

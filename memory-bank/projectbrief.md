@@ -17,8 +17,8 @@ Repo: `DoomsdayAILabs/typingmind-excel-engine` · rama `main` · producto en **v
 
 | Pieza | Archivo | Dónde vive |
 |---|---|---|
-| Extensión UI + puente | `typingmind-excel-engine-v1.0.js` (645 líneas) | TypingMind → Settings → Extensions |
-| Motor (Worker) | `duckdb-worker.js` (599 líneas) | GitHub Pages (lo descarga la extensión) |
+| Extensión UI + puente | `typingmind-excel-engine-v1.0.js` (849 líneas) | TypingMind → Settings → Extensions |
+| Motor (Worker) | `duckdb-worker.js` (600 líneas) | GitHub Pages (lo descarga la extensión) |
 | Plugin IA | `plugin/plugin.json` + `plugin/implementation.js` | TypingMind → Plugins |
 
 ## Objetivos núcleo
@@ -39,10 +39,10 @@ Repo: `DoomsdayAILabs/typingmind-excel-engine` · rama `main` · producto en **v
 
 ## Formatos soportados
 
-`.csv`, `.parquet`, `.xlsx`, `.xls` — (`accept` del input en `typingmind-excel-engine-v1.0.js` línea 194).
+`.csv`, `.parquet`, `.xlsx`, `.xls` — (`accept` del input en `typingmind-excel-engine-v1.0.js` línea 213).
 Excel multi‑hoja: **una tabla por pestaña** (`excel_data` + `excel_data_<hoja saneada>`).
 
-## Fuera de alcance (documentado en README, líneas 373‑399)
+## Fuera de alcance (documentado en README, líneas 377‑403)
 
 - Persistencia e historial entre recargas.
 - Trabajar con **dos archivos a la vez**: cada carga recrea la tabla base pero **no elimina** tablas
@@ -54,16 +54,17 @@ Excel multi‑hoja: **una tabla por pestaña** (`excel_data` + `excel_data_<hoja
 - Widget inyectado, badge de estado y estado final **"Motor Listo"**.
 - Carga correcta de los 4 formatos con metadatos, esquema y preview de 10 filas.
 - `query_excel_data` devuelve Markdown con datos reales (máx. 50 filas).
-- Suites de regresión en verde: `44/44` (Fase 5) y `25/25` (Fase 3B).
+- Suites de regresión en verde: `85/85` (Fase 6 · selector multi‑hoja), `44/44` (Fase 5) y `25/25` (Fase 3B).
 
 ## Documentación y trazabilidad
 
-- `README.md` — documentación de producto (506 líneas).
+- `README.md` — documentación de producto (527 líneas).
 - `plugin/README.md` — integración del plugin / contrato del puente (161 líneas).
 - `memory-bank/` — continuidad entre sesiones de trabajo (este directorio).
 
 ## Por confirmar
 
-- **Titularidad de licencia:** `LICENSE` es **MIT © 2026 DoomsdayAILabs**, pero `README.md`
-  (líneas 498‑500) afirma que el repo "aún no incluye un archivo `LICENSE`" y que los derechos quedan
-  reservados. Falta decidir cuál de los dos textos es el vigente.
+- **Datos de ejemplo ausentes:** `TEUs.xlsx` y `RequerimientoPrueba` (necesarios para la batería SQL
+  manual, 38 casos) no están en el repo.
+- **Identificador único de versión:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto
+  es `1.0`; no hay un número de versión único.

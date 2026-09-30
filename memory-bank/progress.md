@@ -1,15 +1,20 @@
 # Progress — TypingMind Excel Engine
 
 > Qué funciona, qué falta, estado actual e issues conocidos.
-> Estado evaluado el **2026‑09‑30**; commit del producto **`d876db4`** (Fase 6 · UI desplegada) más el
+> Estado evaluado el **2026‑09‑30**; commits del producto **`d876db4`** (Fase 6 · UI desplegada) y
+> **`686a46e`** (Fase 7 · pin de SheetJS `0.18.5` + guardrail y README con `SHOW`/`DESCRIBE`) más el
 > commit de documentación que sincroniza este Memory Bank.
 
 ## Estado actual
 
-**El soporte multi-hoja está 100 % cerrado en las tres piezas: Worker, Plugin IA y UI Widget.** Las
+**El soporte multi-hoja está 100 % cerrado en las tres piezas (Worker, Plugin IA y UI Widget) y las
+dependencias externas quedan fijadas.** SheetJS pasa de etiqueta flotante a **`0.18.5`** (`686a46e`),
+así que DuckDB‑WASM `1.29.0` y SheetJS `0.18.5` son las dos únicas versiones que carga el Worker. Las
 tres suites headless están en verde (**85/85**, 44/44 y 25/25) y GitHub Pages sirve la build de Fase 6
-(cabecera “Fase 6”, 39 550 bytes). El README ya no describe archivos inexistentes y declara la licencia
-MIT oficial. El repositorio está **limpio y sincronizado** con `origin/main`.
+(cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**527 líneas**) ya no describe
+archivos inexistentes, declara la licencia MIT oficial y sus listas de sentencias permitidas y de
+descubrimiento de esquema coinciden con el plugin real. El repositorio está **limpio y sincronizado**
+con `origin/main`.
 
 ## Qué funciona (verificado)
 
@@ -19,7 +24,8 @@ MIT oficial. El repositorio está **limpio y sincronizado** con `origin/main`.
 - **CSV:** `registerFileText` → `CREATE OR REPLACE TABLE` con `read_csv_auto(sample_size=-1,
   ignore_errors=true)` → conteo, esquema (`information_schema.columns`) y preview de 10 filas.
 - **Parquet:** `registerFileBuffer` → `read_parquet` (llega por transferable).
-- **Excel:** `XLSX.read` + `sheet_to_csv` por pestaña → **una tabla por hoja**.
+- **Excel:** `XLSX.read` + `sheet_to_csv` por pestaña → **una tabla por hoja**, con SheetJS **fijado a
+  `0.18.5`** (`SHEETJS_PACKAGE`, worker líneas 5 y 7) desde `686a46e`.
 - **Multi‑hoja: 100 % (Worker).** Una tabla por pestaña, aislamiento de fallos por hoja y detalle
   completo en `hojas[]` (`hojas_totales`, `hojas_cargadas`, `hojas_omitidas`, `hojas_con_error`).
 - **Normalización de tipos** en la frontera `postMessage` (BIGINT fuera de rango → string,
@@ -50,7 +56,8 @@ MIT oficial. El repositorio está **limpio y sincronizado** con `origin/main`.
 
 ### Plugin IA
 - `query_excel_data` declarada en el nivel superior (requisito de TypingMind), `plugin.json` válido.
-- Guardrail de solo lectura, timeout de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas.
+- Guardrail de solo lectura (el mensaje lista `SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`), timeout
+  de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas.
 - Spec multi‑hoja con descubrimiento de tablas (`information_schema.tables` / `SHOW TABLES`,
   `DESCRIBE` / `information_schema.columns`) y aviso del saneado textual del guardrail.
 - **Multi‑hoja: 100 % (Plugin IA).** El spec descubre todas las tablas del libro y trabaja
@@ -63,6 +70,9 @@ MIT oficial. El repositorio está **limpio y sincronizado** con `origin/main`.
 | `tests/fase6-multisheet-verificacion.html` | 85 | **OK 85 / FAIL 0** |
 | `tests/fase5-verificacion.html` | 44 | **OK 44 / FAIL 0** |
 | `tests/fase3b-verificacion.html` | 25 | **OK 25 / FAIL 0** |
+| `node --check` (worker, plugin, extensión) | 3 | **OK (exit 0 ×3)** |
+| jsDelivr: `xlsx@0.18.5` vs. URL sin pin (`HEAD`) | 1 | **881 727 bytes idénticos** |
+| BOM/CRLF/líneas (README, worker, implementation) | 3 | **sin BOM añadido, 0 LF sueltos, sin doble codificación** |
 
 ## Deriva de documentación (corregida)
 
@@ -83,34 +93,33 @@ detectado como evidencia del proceso:
 | 426‑427 | existen `backup/duckdb-worker.v0.4.23-contaminado.js` y `duckdb/typingmind-excel-engine-v0.3-test.js` | **Ninguno existe** |
 | 477 | hitos: "ver carpetas `duckdb/` y `backup/`, no usar" | Las carpetas **no existen** |
 | 498‑500 | "el repositorio **aún no incluye un archivo `LICENSE`**" | **`LICENSE` MIT © 2026 DoomsdayAILabs sí existe** |
-| 83 | el plugin permite solo `SELECT`, `WITH` y `EXPLAIN` | el propio README (líneas 362, 468) y `plugin/README.md` documentan también `SHOW` y `DESCRIBE` (la lista negra no los bloquea) |
-| 89‑90, 320 | el modelo empieza con `SELECT * FROM excel_data LIMIT 1;` para descubrir columnas | el spec actual ordena empezar por `information_schema.tables` / `SHOW TABLES` |
+| 94‑95 | el plugin permite solo `SELECT`, `WITH` y `EXPLAIN` | **corregido en `686a46e`**: el README (líneas 379 y 488) y `plugin/README.md` ya documentan `SHOW` y `DESCRIBE` junto a `SELECT`/`WITH`/`EXPLAIN` (la lista negra no los bloquea) |
+| 101‑102 y 336‑337 | el modelo empieza con `SELECT * FROM excel_data LIMIT 1;` para descubrir columnas | **corregido en `686a46e`**: el README ya ordena `information_schema.tables` / `SHOW TABLES` y después `information_schema.columns` / `DESCRIBE`, igual que el spec |
 
 Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el título
 **"Batería de pruebas SQL — v0.4.20"** (línea 30) aunque el producto es v1.0.
 
-**Estado de la corrección:** las cinco primeras filas de la tabla están **corregidas**; quedan dos
-afirmaciones por alinear con el plugin real —la lista de sentencias permitidas (`SELECT`, `WITH`,
-`EXPLAIN` frente a `SHOW`/`DESCRIBE`) y el orden de descubrimiento del esquema
-(`information_schema.tables` / `SHOW TABLES` en vez de `SELECT * FROM excel_data LIMIT 1;`)— además del
-título desactualizado de `sql-test-runner.html`.
+**Estado de la corrección:** las **siete filas de la tabla están corregidas**. Las dos últimas se
+cerraron en `686a46e` (lista de sentencias permitidas y orden de descubrimiento del esquema). La única
+deriva documental que queda es el título desactualizado de `sql-test-runner.html`.
 
 ## Qué falta / pendientes reales
 
-1. **README (resto de la deriva):** alinear la lista de sentencias permitidas y el orden de
-   descubrimiento del esquema con el plugin real (el árbol, `.nojekyll` y la licencia ya están
-   corregidos).
-2. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
+1. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
    `RequerimientoPrueba`; esos datos de ejemplo ya no están en el repo, así que la batería SQL más
    amplia (**38 casos**: 20 + 18) **no es automatizable hoy**. Ver `testing-strategy.md`.
-3. **SheetJS sin pin de versión** en `duckdb-worker.js` (línea 6).
-4. **Versión del producto:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
+2. **Versión del producto:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
    `1.0`; no hay un único identificador de versión.
+3. **Título de `tests/sql-test-runner.html`:** anuncia "Batería de pruebas SQL — v0.4.20" con el
+   producto en v1.0.
+4. ~~**SheetJS sin pin de versión** en `duckdb-worker.js` (línea 6).~~ **Completado en `686a46e`:**
+   fijado a `0.18.5` con `SHEETJS_PACKAGE` (worker, línea 5) e `importScripts(SHEETJS_PACKAGE)` (línea
+   7). Queda como riesgo residual la ausencia de SRI (ver `techContext.md`).
 
 ## Issues y riesgos conocidos
 
 - **Tablas huérfanas entre cargas:** cada carga recrea la tabla base pero **no elimina** las
-  `excel_data_<hoja>` de un libro anterior con más pestañas (documentado en README líneas 375‑381).
+  `excel_data_<hoja>` de un libro anterior con más pestañas (documentado en README líneas 379‑385).
   El **selector de hojas no las muestra** (se construye desde `result.hojas` del libro vigente), pero
   siguen siendo consultables con `SHOW TABLES` y desde la consola SQL.
 - **Guardrail = lista negra textual.** Solo se bloquean `drop`, `alter`, `insert`, `update`, `delete`,
@@ -146,6 +155,8 @@ título desactualizado de `sql-test-runner.html`.
 | **Memory Bank inicializado** (6 archivos núcleo + 2 de contexto) y `.clinerules/` versionados | `425e5fd` |
 | **Fase 6 · UI**: selector de hojas multi-hoja en el widget + suite de 85 checks | `d876db4` |
 | Memory Bank sincronizado con Fase 6 y README purgado (deriva + licencia MIT) | commit de docs posterior a `d876db4` |
+| **Fase 7 · deps/docs**: pin de SheetJS `0.18.5` + guardrail y README con `SHOW`/`DESCRIBE` | `686a46e` |
+| Memory Bank sincronizado con Fase 7 (dependencias fijadas y referencias de README) | commit de docs posterior a `686a46e` |
 
 ## Por confirmar
 
