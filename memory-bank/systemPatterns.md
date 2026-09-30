@@ -1,9 +1,9 @@
 # System Patterns — TypingMind Excel Engine
 
 > Arquitectura, decisiones técnicas y rutas críticas de implementación.
-> Todo verificado leyendo el código. Los números de línea citados corresponden a
-> `typingmind-excel-engine-v1.0.js` y `duckdb-worker.js`, sin cambios desde `5067b16`
-> (documentados en el commit `425e5fd`).
+> Todo verificado leyendo el código. Los números de línea de la extensión corresponden a la versión con
+> **Fase 6 · UI** (`d876db4`, 849 líneas) y los del worker a `duckdb-worker.js` (599 líneas, sin cambios
+> desde `5067b16`); la sincronización de este documento se hace en el commit de docs posterior.
 
 ## Arquitectura: 3 piezas, 2 protocolos, 1 navegador
 
@@ -29,19 +29,19 @@
 ### 1. Bypass de CORS con Blob URL (doble)
 GitHub Pages y jsDelivr no permiten `new Worker()` cross‑origin.
 - **Extensión:** `fetch(WORKER_PATH)` → `Blob` → `Worker(blobURL)`; la URL se revoca
-  (`revokeObjectURL`) en cuanto `initDuckDB` termina (líneas 46‑77).
+  (`revokeObjectURL`) en cuanto `initDuckDB` termina (líneas 51‑93).
 - **Worker:** DuckDB‑WASM necesita su propio `mainWorker`; se crea un **segundo Blob Worker** cuyo
   único contenido es `importScripts(bundle.mainWorker)` (worker, líneas 31‑43).
 
 ### 2. Petición/respuesta con `requestId` y `Map` de pendientes
-`sendRequest(type, payload, timeoutMs, transferables)` (extensión, líneas 86‑97) genera ids
+`sendRequest(type, payload, timeoutMs, transferables)` (extensión, líneas 95‑106) genera ids
 incrementales y guarda `{ resolve, reject, timer }` en `pending`. La respuesta llega por
 `worker.onmessage` y se empareja por `requestId`. Timeouts: **120 s** en `initDuckDB` y cargas,
 **60 s** en `executeQuery`.
 
 ### 3. Transferables para binarios
 Parquet y Excel se envían al Worker como `ArrayBuffer` con lista de transferencia
-(`sendRequest(..., 120000, [e.target.result])`, extensión líneas 436‑446) → sin copia.
+(`sendRequest(..., 120000, [e.target.result])`, extensión líneas 466‑477) → sin copia.
 
 ### 4. Normalización de tipos en el Worker (frontera `postMessage`)
 `normalizeValue` / `normalizeRows` (worker, líneas 61‑149):
@@ -91,20 +91,50 @@ Los `mousedown`/`mouseup` sintéticos que el navegador emite tras un toque se de
 temporal; `touchend` se cancela para no duplicar la alternancia. Posición con `limitarDentroDeViewport`
 (clamping) y reajuste en `resize` (más `setTimeout` de 320 ms para esperar la transición de 0.3 s).
 
+### 10. Selector de hojas en la UI: estado mínimo + aislamiento condicional (Fase 6)
+Tres variables de módulo sostienen todo el comportamiento multi-hoja de la extensión:
+- `libroActual` — el `result` de la última carga con `hojas[]` (`null` si la carga no es un Excel
+  multi-hoja, p. ej. CSV o Parquet).
+- `hojaActiva` — nombre de tabla visible en este momento (`excel_data` o `excel_data_<hoja>`).
+- `plantillaSqlActual` — última plantilla autogenerada, que permite detectar si el usuario editó la
+  consola SQL.
+
+**Aislamiento condicional (cambio no invasivo).** `renderizarSelectorHojas()` solo puebla la barra si
+el libro tiene **más de una hoja con `estado: "ok"`**; en cualquier otro caso llama a
+`ocultarSelectorHojas()` y el widget queda exactamente como en Fase 5. La barra vive **dentro de
+`.tmee-body`**, de modo que el modo icono —que oculta el cuerpo con `display: none !important`— la
+esconde sin tocar el FAB de 50×50 px.
+
+**Sustitución conservadora del SQL** (`aplicarPlantillaSql(tablaNueva, tablaAnterior)`):
+1. Si es una carga nueva (`tablaAnterior === null`) o la consola sigue siendo idéntica a
+   `plantillaSqlActual`, se reescribe la plantilla completa (`SELECT * FROM <tabla> LIMIT 10;`).
+2. Si el usuario la editó, se sustituye **solo** el token del `FROM` mediante
+   `(FROM\s+)<tablaAnterior>(?=$|[^A-Za-z0-9_])`. El *lookahead* es imprescindible: sin él, venir de
+   `excel_data` corrompería `excel_data_Ventas`. Si la tabla va entrecomillada no hay coincidencia y el
+   texto del usuario se respeta literalmente.
+
+**Cambio de hoja sin recargar.** `seleccionarHoja(tabla)` valida la tabla contra `libroActual.hojas`
+(solo `estado: "ok"`), actualiza los metadatos, reapunta la consola y reutiliza `ejecutarSQL()`: no hay
+mensaje nuevo al Worker ni re-procesado del VFS, porque cada pestaña ya es una tabla viva.
+`resetearSelectorHojas()` se invoca al arrancar `procesarArchivo` para que un libro nuevo —o una carga
+fallida— no deje hojas ni plantillas del anterior.
+
 ## Rutas críticas de implementación
 
 | Necesidad | Punto de entrada |
 |---|---|
-| Arranque (DOM listo) | extensión líneas 640‑644 → `injectWidget()` + `initWorker()` |
-| Inyectar el widget | `injectWidget()` líneas 129‑230 (CSS id `tmee-widget-styles`, nodo `#tmee-widget-root`) |
-| Eventos de UI | `setupEvents()` líneas 233‑256 + `setupDrag()` líneas 297‑303 |
-| Cargar archivo | `procesarArchivo(file)` líneas 419‑448 (CSV texto / Parquet‑Excel binario) |
-| Ejecutar SQL manual | `ejecutarSQL()` líneas 461‑477 |
-| Pintar tabla | `renderizarTablaSQL(rows)` líneas 479‑515 (máx. 100 filas) |
-| Enviar al chat | `inyectarEnChat()` líneas 566‑615 (`buscarInputChat` → `construirTablaMarkdown`) |
-| Exportar CSV | `exportarCSV()` líneas 617‑638 (`tmee_resultados.csv`) |
-| Escapado Markdown | `escaparCeldaMarkdown` líneas 523‑529 (`\` → `\\`, `|` → `\|`, saltos → `<br>`) |
-| Puente IA | listener global líneas 100‑126 |
+| Arranque (DOM listo) | extensión líneas 844‑848 → `injectWidget()` + `initWorker()` |
+| Inyectar el widget | `injectWidget()` líneas 138‑255 (CSS id `tmee-widget-styles` en 144‑196; nodo `#tmee-widget-root` en 199‑251) |
+| Eventos de UI | `setupEvents()` líneas 258‑284 + `setupDrag()` líneas 325‑331 |
+| Cargar archivo | `procesarArchivo(file)` líneas 447‑478 (CSV texto / Parquet‑Excel binario + reset del selector) |
+| Renderizar una carga | `renderizarResultado(result)` líneas 485‑498 + `actualizarMetaHoja()` 501‑516 |
+| Selector de hojas (Fase 6) | `renderizarSelectorHojas()` 525‑565 · `seleccionarHoja()` 617‑629 · `aplicarPlantillaSql()` 639‑657 · `resetearSelectorHojas()` 605‑610 |
+| Ejecutar SQL manual | `ejecutarSQL()` líneas 665‑681 |
+| Pintar tabla | `renderizarTablaSQL(rows)` líneas 683‑719 (máx. 100 filas) |
+| Enviar al chat | `inyectarEnChat()` líneas 770‑819 (`buscarInputChat` → `construirTablaMarkdown`) |
+| Exportar CSV | `exportarCSV()` líneas 821‑842 (`tmee_resultados.csv`) |
+| Escapado Markdown | `escaparCeldaMarkdown` líneas 727‑733 (`\` → `\\`, `|` → `\|`, saltos → `<br>`) |
+| Puente IA | listener global líneas 109‑135 |
 | Tipos de mensaje del Worker | `self.onmessage` worker líneas 561‑599 |
 
 ## Contrato de datos devuelto por las cargas
@@ -133,8 +163,8 @@ Detalle del puente de la IA en `plugin-bridge-protocol.md`.
 
 - El empaquetado/publicación no está automatizado: no hay `.github/`, ni `package.json`, ni CI.
   La única "publicación" es servir la rama `main` por GitHub Pages.
-- `#tmee-dropzone` anuncia "`.csv, .parquet, .xlsx`" (línea 192) mientras el `accept` incluye `.xls`
-  (línea 194): divergencia menor de copy, sin impacto funcional.
+- `#tmee-dropzone` anuncia "`.csv, .parquet, .xlsx`" (línea 211) mientras el `accept` incluye `.xls`
+  (línea 213): divergencia menor de copy, sin impacto funcional.
 - `sanitizeTableName` (worker líneas 164‑170) **no** recorta `_` de los extremos, mientras
   `sanitizeSheetSuffix` (líneas 329‑339) sí: comportamiento intencional o descuido, por confirmar.
 

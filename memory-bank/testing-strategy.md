@@ -1,8 +1,7 @@
 # Testing Strategy — TypingMind Excel Engine
 
 > Cómo se prueba el proyecto, qué cubre cada suite y qué no es automatizable hoy.
-> Resultados ejecutados y verificados el **2026‑09‑30** (código de producto de `5067b16`, sin cambios
-> en `425e5fd`, que solo añade documentación).
+> Resultados ejecutados y verificados el **2026‑09‑30** sobre el producto con Fase 6 · UI (`d876db4`).
 
 ## Principios
 
@@ -13,11 +12,16 @@
   --virtual-time-budget=30000`, lee el `<title>` y reporta `OK/FAIL`; **sale con código 1 si hay
   algún FAIL**.
 - Los tests del widget **stubean** `fetch` y `Worker` antes de cargar el motor, por lo que validan la
-  lógica de UI/puente sin red ni DuckDB real.
+  lógica de UI/puente sin red ni DuckDB real. La suite de Fase 6 **stubea además `FileReader`**: con
+  headless y `--virtual-time-budget` la lectura real de archivos no siempre termina dentro de la ventana
+  medida y dejaba cargas a medias (`estado = "Cargando..."`).
 
 ## Cómo ejecutarlas
 
 ```powershell
+# Fase 6 — selector de hojas multi-hoja en la UI (85 checks)
+node tests/run-headless.js tests/fase6-multisheet-verificacion.html
+
 # Fase 5 — UI móvil, FAB, arrastre, inyección (44 checks)
 node tests/run-headless.js tests/fase5-verificacion.html
 
@@ -37,6 +41,7 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 
 | Archivo | Tipo | Cobertura | Estado |
 |---|---|---|---|
+| `tests/fase6-multisheet-verificacion.html` | automática headless | **85 checks**: barra oculta con CSV/Parquet/Excel de 1 hoja; libro de 5 pestañas → 5 opciones (3 habilitadas, 2 deshabilitadas) con etiquetas (`42 filas`, `omitida (vacía)`, `omitida (sin datos)`, `solo cabeceras`); resumen `Hojas 3/5 · 2 vacías` en ámbar + tooltip por hoja; orden DOM metadatos → barra → consola; selección inicial = tabla primaria (≠ hoja 0); cambio de hoja con metadatos y **una sola** consulta nueva (sin recargar el archivo); preservación de la consulta editada y de la tabla entrecomillada; selecciones vacías/ajenas al libro ignoradas; reset por archivo nuevo y por carga fallida; FAB 50×50 y arrastre de cabecera intactos; reglas CSS de Fase 6 y de Fase 5 | **85/85 OK** |
 | `tests/fase5-verificacion.html` | automática headless | 44 checks: widget inyectado, modo icono 50×50, geometry/clamping, arrastre ratón y táctil, umbral clic vs. arrastre, supresión del ratón sintético, auto‑minimizado al enviar, reglas CSS exigidas | **44/44 OK** |
 | `tests/fase3b-verificacion.html` | automática headless | 25 checks: botón "💬 Enviar a TM", escapado Markdown (pipe, salto de línea → `<br>`, `null`), límite de 50 filas + aviso de omitidas, evento `input` para React, suma al texto existente, alertas, fallback a portapapeles, exportación CSV, ausencia del botón ➖ | **25/25 OK** |
 | `tests/fase3b-visual.html` | manual/visual | capturas de los estados `#min`, `#drag`, `#send` (usa `File` en memoria con `ventas.csv`, sin red) | por confirmar visualmente |
@@ -47,8 +52,9 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 ## Estado verificado hoy (evidencia literal)
 
 ```text
-== tests/fase5-verificacion.html (900,760) => checks: 44 | OK: 44 | FAIL: 0      (exit 0)
-== tests/fase3b-verificacion.html (900,760) => checks: 25 | OK: 25 | FAIL: 0      (exit 0)
+== tests/fase6-multisheet-verificacion.html (900,760) => checks: 85 | OK: 85 | FAIL: 0   (exit 0)
+== tests/fase5-verificacion.html (900,760) => checks: 44 | OK: 44 | FAIL: 0             (exit 0)
+== tests/fase3b-verificacion.html (900,760) => checks: 25 | OK: 25 | FAIL: 0            (exit 0)
 ```
 
 Comprobaciones adicionales sin ejecución de navegador:
@@ -75,11 +81,14 @@ JSON.parse(plugin/plugin.json)                 → JSON válido
    geometría final del icono flotante y verifica la declaración `transition` sobre el texto del CSS.
 5. **No hay cobertura automatizada del plugin** (`plugin/implementation.js`) más allá del puente que
    la suite de Fase 3B ejercita indirectamente desde el lado del motor.
+6. **El I/O real de archivos no se prueba en headless:** la suite de Fase 6 stubea `FileReader` para ser
+   determinista bajo `--virtual-time-budget`. La lectura real de CSV/XLSX se valida con las páginas
+   manuales (`test-widget.html`, `test-duckdb-worker.html`) contra un servidor local.
 
 ## Protocolo al cambiar código (regla del repo)
 
-1. Ejecutar **ambas** suites headless y dejarlas en verde antes de dar por bueno un cambio en
-   `typingmind-excel-engine-v1.0.js` o `duckdb-worker.js`.
+1. Ejecutar **las tres** suites headless (Fase 6, Fase 5 y Fase 3B) y dejarlas en verde antes de dar
+   por bueno un cambio en `typingmind-excel-engine-v1.0.js` o `duckdb-worker.js`.
 2. Ampliar los checks de `tests/` cuando se cambie el comportamiento del widget o del plugin.
 3. Mantener sincronizados `README.md` (producto) y `plugin/README.md` (integración IA).
 

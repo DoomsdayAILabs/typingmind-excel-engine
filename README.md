@@ -258,8 +258,8 @@ y la extensión responde al `event.source` (o hace *broadcast* a los iframes si 
 > **¿Usas un fork propio?** Sustituye `doomsdayailabs/typingmind-excel-engine` por tu
 > `usuario/repositorio` de GitHub Pages **y actualiza también la constante `WORKER_PATH`**
 > dentro de `typingmind-excel-engine-v1.0.js` (línea 16), porque el worker se descarga de una URL
-> absoluta. Con GitHub Pages activado en `main` y el archivo `.nojekyll` ya incluido, los dos
-> archivos quedan servidos en la misma ruta base.
+> absoluta. Sirviendo la rama `main` (GitHub Pages o cualquier servidor estático), los dos archivos
+> quedan accesibles en la misma ruta base.
 
 ### Paso 2 · El Plugin (el cerebro que da herramientas a la IA)
 
@@ -424,8 +424,6 @@ typingmind-excel-engine/
 │   ├── implementation.js             ← ③ PRODUCTO: código del plugin (query_excel_data)
 │   └── README.md                     ← Documentación de la integración del plugin
 ├── README.md                         ← Este archivo
-├── index.html                        ← GitHub Pages: historial de versiones descargables
-├── .nojekyll                         ← Necesario para servir el repo tal cual en Pages
 │
 ├── test-widget.html                  ← DEV: simulador de TypingMind (widget real, sin IA)
 ├── test-duckdb-worker.html           ← DEV: banco de pruebas del Worker
@@ -436,9 +434,6 @@ typingmind-excel-engine/
 │   ├── fase3b-visual.html            ← DEV: capturas visuales (#min / #drag / #send)
 │   ├── sql-test-runner.html          ← DEV: batería de consultas SQL
 │   └── run-headless.js               ← DEV: runner de los tests en Chrome/Edge headless
-│
-├── backup/duckdb-worker.v0.4.23-contaminado.js  ← LEGADO (histórico, no usar)
-└── duckdb/typingmind-excel-engine-v0.3-test.js  ← LEGADO (prototipo v0.3, no usar)
 ```
 
 ---
@@ -495,7 +490,7 @@ Estado verificado de esta entrega: `85/85` checks de Fase 6 (selector de hojas m
 
 | Fase | Entregable |
 |---|---|
-| Prototipos v0.3 / v0.4.x | Primeras aproximaciones (ver carpetas `duckdb/` y `backup/`, no usar) |
+| Prototipos v0.3 / v0.4.x | Primeras aproximaciones, retiradas del repositorio (no quedan restos en `main`) |
 | Fase 1B | Motor DuckDB‑WASM en Web Worker + proxy Blob para evitar CORS (`v1.0-phase-1b`) |
 | Fase 1C | Soporte **Parquet** con `read_parquet` |
 | Fase 1D | Soporte **Excel** con SheetJS dentro del Worker |
@@ -517,9 +512,9 @@ Estado verificado de esta entrega: `85/85` checks de Fase 6 (selector de hojas m
 
 ## 📄 Licencia
 
-Este repositorio **aún no incluye un archivo `LICENSE`**: los derechos quedan reservados por el
-autor hasta que se defina una licencia explícita. Si quieres reutilizarlo o redistribuirlo, abre un
-*issue* en el repositorio para acordar la licencia.
+Este proyecto se distribuye bajo la **licencia MIT**. El texto completo está en el archivo
+[`LICENSE`](LICENSE) — MIT © 2026 **DoomsdayAILabs**: puedes usar, modificar y redistribuir el
+software, incluso comercialmente, conservando el aviso de copyright y sin garantías de ningún tipo.
 
 ---
 

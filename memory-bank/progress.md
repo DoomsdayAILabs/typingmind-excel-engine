@@ -1,16 +1,15 @@
 # Progress — TypingMind Excel Engine
 
 > Qué funciona, qué falta, estado actual e issues conocidos.
-> Estado evaluado el **2026‑09‑30**; commit de referencia **`425e5fd`** (el código de producto no ha
-> cambiado desde `5067b16`).
+> Estado evaluado el **2026‑09‑30**; commit del producto **`d876db4`** (Fase 6 · UI desplegada) más el
+> commit de documentación que sincroniza este Memory Bank.
 
 ## Estado actual
 
-**v1.0 cerrado y desplegado.** Las dos suites headless automatizadas están en verde (44/44 y 25/25) y
-los archivos servidos por GitHub Pages son idénticos a `main`. El trabajo pendiente es de
-**documentación y dependencias**, no de funcionalidad. El repositorio está **limpio y sincronizado**
-(commit de referencia del Memory Bank: `425e5fd`; el código de producto sigue en `5067b16` y los
-commits posteriores solo tocan documentación).
+**El soporte multi-hoja está 100 % cerrado en las tres piezas: Worker, Plugin IA y UI Widget.** Las
+tres suites headless están en verde (**85/85**, 44/44 y 25/25) y GitHub Pages sirve la build de Fase 6
+(cabecera “Fase 6”, 39 550 bytes). El README ya no describe archivos inexistentes y declara la licencia
+MIT oficial. El repositorio está **limpio y sincronizado** con `origin/main`.
 
 ## Qué funciona (verificado)
 
@@ -21,6 +20,8 @@ commits posteriores solo tocan documentación).
   ignore_errors=true)` → conteo, esquema (`information_schema.columns`) y preview de 10 filas.
 - **Parquet:** `registerFileBuffer` → `read_parquet` (llega por transferable).
 - **Excel:** `XLSX.read` + `sheet_to_csv` por pestaña → **una tabla por hoja**.
+- **Multi‑hoja: 100 % (Worker).** Una tabla por pestaña, aislamiento de fallos por hoja y detalle
+  completo en `hojas[]` (`hojas_totales`, `hojas_cargadas`, `hojas_omitidas`, `hojas_con_error`).
 - **Normalización de tipos** en la frontera `postMessage` (BIGINT fuera de rango → string,
   HugeInt/Decimal, fechas ISO, binarios a arrays).
 - **Limpieza del VFS** (`dropFile`) en el `finally` de las tres rutas de carga.
@@ -34,23 +35,45 @@ commits posteriores solo tocan documentación).
   React + auto‑minimizado; fallback a portapapeles.
 - Puente `postMessage` del canal `tm-excel-engine` operativo (incluye *broadcast* a iframes si no hay
   `event.source`).
+- **Multi‑hoja: 100 % (UI Widget).** Barra compacta `#tmee-sheets-bar` entre los metadatos y la consola
+  SQL, con **desplegable nativo** `#tmee-sheets-select` (una opción por pestaña del libro).
+- **Aislamiento condicional:** la barra solo se muestra si el libro tiene **más de una hoja con datos**
+  (`cargadas > 1`); con CSV, Parquet o Excel de una sola hoja el widget es idéntico al de Fase 5.
+- **Hojas no seleccionables:** las omitidas o con error se listan **deshabilitadas** y etiquetadas
+  (`omitida (vacía)`, `omitida (sin datos)`) y las de solo cabeceras se marcan como tales; el resumen
+  (`Hojas 3/5 · 2 vacías`) avisa en ámbar y el tooltip detalla el desenlace de cada pestaña.
+- **Cambio de hoja sin recargar:** reapunta la consola a `excel_data_<hoja>` y reconsulta mediante
+  `executeQuery` (una única petición nueva; el archivo **no** se vuelve a subir ni se reprocesa el VFS).
+- **Sustitución conservadora del SQL:** la plantilla se reescribe solo si el usuario no la editó; si la
+  editó, se sustituye **únicamente** el token `FROM <tabla>` y su consulta se conserva intacta.
+- **Metadato de columnas** (`#tmee-meta-cols`) junto a tabla y registros de la hoja activa.
 
 ### Plugin IA
 - `query_excel_data` declarada en el nivel superior (requisito de TypingMind), `plugin.json` válido.
 - Guardrail de solo lectura, timeout de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas.
 - Spec multi‑hoja con descubrimiento de tablas (`information_schema.tables` / `SHOW TABLES`,
   `DESCRIBE` / `information_schema.columns`) y aviso del saneado textual del guardrail.
+- **Multi‑hoja: 100 % (Plugin IA).** El spec descubre todas las tablas del libro y trabaja
+  indistintamente con `excel_data` y `excel_data_<hoja>` sin cambios adicionales.
 
 ### Verificaciones ejecutadas hoy (evidencia)
 
 | Suite | Checks | Resultado |
 |---|---|---|
+| `tests/fase6-multisheet-verificacion.html` | 85 | **OK 85 / FAIL 0** |
 | `tests/fase5-verificacion.html` | 44 | **OK 44 / FAIL 0** |
 | `tests/fase3b-verificacion.html` | 25 | **OK 25 / FAIL 0** |
 
-## Deriva de documentación (detectada, NO corregida)
+## Deriva de documentación (corregida)
 
-`README.md` describe un repositorio que ya no existe en varios puntos. Verificado con
+`README.md` **ya está alineado con el repositorio**. En el commit de sincronización del Memory Bank se
+eliminaron del árbol las líneas de `index.html`, `.nojekyll`,
+`backup/duckdb-worker.v0.4.23-contaminado.js` y `duckdb/typingmind-excel-engine-v0.3-test.js`; se
+quitaron las menciones a `.nojekyll` en la guía de instalación y a las carpetas legado en los hitos; y
+la sección § Licencia declara ya la **MIT oficial** (`LICENSE`). Se conserva el registro de lo
+detectado como evidencia del proceso:
+
+`README.md` describía un repositorio que ya no existía en varios puntos. Verificado con
 `Get-ChildItem -Force` y búsquedas en el archivo:
 
 | Línea del README | Afirma | Realidad verificada |
@@ -66,9 +89,17 @@ commits posteriores solo tocan documentación).
 Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el título
 **"Batería de pruebas SQL — v0.4.20"** (línea 30) aunque el producto es v1.0.
 
+**Estado de la corrección:** las cinco primeras filas de la tabla están **corregidas**; quedan dos
+afirmaciones por alinear con el plugin real —la lista de sentencias permitidas (`SELECT`, `WITH`,
+`EXPLAIN` frente a `SHOW`/`DESCRIBE`) y el orden de descubrimiento del esquema
+(`information_schema.tables` / `SHOW TABLES` en vez de `SELECT * FROM excel_data LIMIT 1;`)— además del
+título desactualizado de `sql-test-runner.html`.
+
 ## Qué falta / pendientes reales
 
-1. **README:** corregir la deriva de la tabla anterior y decidir el texto de licencia.
+1. **README (resto de la deriva):** alinear la lista de sentencias permitidas y el orden de
+   descubrimiento del esquema con el plugin real (el árbol, `.nojekyll` y la licencia ya están
+   corregidos).
 2. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
    `RequerimientoPrueba`; esos datos de ejemplo ya no están en el repo, así que la batería SQL más
    amplia (**38 casos**: 20 + 18) **no es automatizable hoy**. Ver `testing-strategy.md`.
@@ -80,6 +111,8 @@ Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el tít
 
 - **Tablas huérfanas entre cargas:** cada carga recrea la tabla base pero **no elimina** las
   `excel_data_<hoja>` de un libro anterior con más pestañas (documentado en README líneas 375‑381).
+  El **selector de hojas no las muestra** (se construye desde `result.hojas` del libro vigente), pero
+  siguen siendo consultables con `SHOW TABLES` y desde la consola SQL.
 - **Guardrail = lista negra textual.** Solo se bloquean `drop`, `alter`, `insert`, `update`, `delete`,
   `create`, `copy`, `attach`, `export`, `pragma force`. Otras sentencias de DuckDB que no estén en esa
   lista y no sean de lectura (p. ej. `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `VACUUM`, `CHECKPOINT`)
@@ -111,10 +144,16 @@ Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el tít
 | Spec multi‑hoja con descubrimiento de tablas | `e174d79` |
 | README sincronizado con `SHOW`/`DESCRIBE` y sin referencias a `test-data` | `38521f4`, `5067b16` |
 | **Memory Bank inicializado** (6 archivos núcleo + 2 de contexto) y `.clinerules/` versionados | `425e5fd` |
+| **Fase 6 · UI**: selector de hojas multi-hoja en el widget + suite de 85 checks | `d876db4` |
+| Memory Bank sincronizado con Fase 6 y README purgado (deriva + licencia MIT) | commit de docs posterior a `d876db4` |
 
 ## Por confirmar
 
 - Destino de los datos de ejemplo eliminados (`test-data`): ¿existen fuera del repo para uso manual?
-- Si se quiere `index.html` de vuelta como historial de versiones descargables (el README lo anuncia).
-- Estado de GitHub Pages como Pages "clásico" vs. Actions: no hay workflow en el repo.
+- Si se quiere `index.html` de vuelta como historial de versiones descargables (ya no lo anuncia el
+  README, así que ahora es una decisión de producto).
+- Estado de GitHub Pages como Pages "clásico" vs. Actions: no hay workflow en el repo (la propagación
+  de `d876db4` tardó unos minutos, coherente con una caché de build).
+- **Caso borde del selector:** libro con 1 hoja cargada y 1 vacía → la barra no se muestra y la omisión
+  pasa desapercibida (un cambio de una línea, pendiente de decisión).
 
