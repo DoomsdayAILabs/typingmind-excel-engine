@@ -1,13 +1,15 @@
 # Progress — TypingMind Excel Engine
 
 > Qué funciona, qué falta, estado actual e issues conocidos.
-> Estado evaluado el **2026‑09‑30** sobre el commit `5067b16`.
+> Estado evaluado el **2026‑09‑30**; commit de referencia **`425e5fd`** (el código de producto no ha
+> cambiado desde `5067b16`).
 
 ## Estado actual
 
 **v1.0 cerrado y desplegado.** Las dos suites headless automatizadas están en verde (44/44 y 25/25) y
 los archivos servidos por GitHub Pages son idénticos a `main`. El trabajo pendiente es de
-**documentación, dependencias e higiene de repo**, no de funcionalidad.
+**documentación y dependencias**, no de funcionalidad. El repositorio está **limpio y sincronizado**
+(HEAD = `origin/main` = `425e5fd`).
 
 ## Qué funciona (verificado)
 
@@ -65,13 +67,12 @@ Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el tít
 
 ## Qué falta / pendientes reales
 
-1. **Higiene de repo:** `memory-bank/` y `.clinerules/` están **sin trackear** en git.
-2. **README:** corregir la deriva de la tabla anterior y decidir el texto de licencia.
-3. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
+1. **README:** corregir la deriva de la tabla anterior y decidir el texto de licencia.
+2. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
    `RequerimientoPrueba`; esos datos de ejemplo ya no están en el repo, así que la batería SQL más
-   amplia (18 casos + batería "archivo grande") **no es automatizable hoy**. Ver `testing-strategy.md`.
-4. **SheetJS sin pin de versión** en `duckdb-worker.js` (línea 6).
-5. **Versión del producto:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
+   amplia (**38 casos**: 20 + 18) **no es automatizable hoy**. Ver `testing-strategy.md`.
+3. **SheetJS sin pin de versión** en `duckdb-worker.js` (línea 6).
+4. **Versión del producto:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
    `1.0`; no hay un único identificador de versión.
 
 ## Issues y riesgos conocidos
@@ -108,6 +109,7 @@ Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el tít
 | **Multi‑hoja en el Worker** (aislamiento por hoja, Variante A) | `142478e` |
 | Spec multi‑hoja con descubrimiento de tablas | `e174d79` |
 | README sincronizado con `SHOW`/`DESCRIBE` y sin referencias a `test-data` | `38521f4`, `5067b16` |
+| **Memory Bank inicializado** (6 archivos núcleo + 2 de contexto) y `.clinerules/` versionados | `425e5fd` |
 
 ## Por confirmar
 

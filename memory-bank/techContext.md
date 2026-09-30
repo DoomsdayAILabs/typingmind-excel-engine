@@ -1,7 +1,8 @@
 # Tech Context — TypingMind Excel Engine
 
 > Tecnologías, entorno de desarrollo, restricciones y dependencias.
-> Verificado en la máquina local (Windows, 2026‑09‑30) sobre el commit `5067b16`.
+> Verificado en la máquina local (Windows, 2026‑09‑30) con el código de producto de `5067b16`
+> (sin cambios en `425e5fd`).
 
 ## Stack
 
@@ -67,7 +68,8 @@ python -m http.server 8080
 ## Despliegue (estado verificado hoy)
 
 Los dos archivos de producto servidos por GitHub Pages **coinciden línea a línea** con el working
-tree en `5067b16` (comparación de texto normalizado; solo difieren en BOM/CRLF):
+tree (código de producto sin cambios desde `5067b16`; `425e5fd` solo añade documentación). Comparación
+de texto normalizado — solo difieren en BOM/CRLF:
 
 | Archivo | HTTP | ¿Texto idéntico al local? |
 |---|---|---|

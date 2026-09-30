@@ -1,7 +1,9 @@
 # System Patterns — TypingMind Excel Engine
 
 > Arquitectura, decisiones técnicas y rutas críticas de implementación.
-> Todo verificado leyendo el código (líneas citadas del commit `5067b16`).
+> Todo verificado leyendo el código. Los números de línea citados corresponden a
+> `typingmind-excel-engine-v1.0.js` y `duckdb-worker.js`, sin cambios desde `5067b16`
+> (documentados en el commit `425e5fd`).
 
 ## Arquitectura: 3 piezas, 2 protocolos, 1 navegador
 

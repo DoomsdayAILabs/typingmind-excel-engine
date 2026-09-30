@@ -1,7 +1,8 @@
 # Project Brief — TypingMind Excel Engine
 
 > Documento fundacional. Fuente de verdad del alcance.
-> Derivado de la inspección directa del repo en el commit `5067b16` (2026-09-30). Nada aquí es especulativo.
+> Derivado de la inspección directa del repo; commit de referencia **`425e5fd`** (2026-09-30). El código
+> de producto no ha cambiado desde `5067b16`. Nada aquí es especulativo.
 
 ## Qué es
 

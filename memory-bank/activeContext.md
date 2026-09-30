@@ -6,15 +6,16 @@
 ## Foco actual
 
 **El producto v1.0 está cerrado y desplegado.** La tarea de esta sesión fue crear el Memory Bank a
-partir de una inspección real del repositorio (sin inventar nada). No se ha modificado ni una línea de
-código de producto: los únicos archivos nuevos son los de `memory-bank/`.
+partir de una inspección real del repositorio (sin inventar nada), versionarlo (`425e5fd`) y dejarlo
+al día con ese commit de referencia. No se ha modificado ni una línea de código de producto: los
+únicos archivos nuevos son los de `memory-bank/` y `.clinerules/`.
 
 ## Estado del repositorio (verificado hoy)
 
-- Commit de referencia: **`5067b16`** — `docs: sincronizar README con sentencias SHOW/DESCRIBE y
-  limpiar referencias a test-data`. Rama `main`, sincronizada con `origin/main`.
-- Único cambio pendiente en git: **`.clinerules/` está sin trackear** (`?? .clinerules/`).
-  El nuevo directorio `memory-bank/` también aparece como no trackeado hasta que se haga commit.
+- Commit de referencia: **`425e5fd`** — `docs: inicializar memory bank` (incluye `.clinerules/` y los
+  8 archivos de `memory-bank/`). Rama `main`, sincronizada con `origin/main`.
+- **Working tree limpio:** no hay cambios pendientes ni archivos sin trackear. El código de producto
+  no se ha tocado desde `5067b16`.
 - Sin `package.json`, sin CI, sin `.github/`. Repo estático.
 
 ## Verificación ejecutada en esta sesión
@@ -48,8 +49,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
    `progress.md` § Deriva de documentación): README habla de `index.html`, `.nojekyll`, `backup/`,
    `duckdb/` y de "no hay LICENSE" — ninguno de esos puntos es cierto hoy.
 2. **Fijar la versión de SheetJS** en `duckdb-worker.js` (hoy se descarga `xlsx` sin pin).
-3. **Commitear `memory-bank/` y `.clinerules/`** (hoy sin trackear).
-4. **Documentar cómo obtener los archivos de muestra** que exige `tests/sql-test-runner.html`
+3. **Documentar cómo obtener los archivos de muestra** que exige `tests/sql-test-runner.html`
    (`TEUs.xlsx`, `RequerimientoPrueba`), porque ya no viven en el repo.
 
 ## Patrones y aprendizajes de esta sesión

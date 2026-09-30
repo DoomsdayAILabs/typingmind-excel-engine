@@ -1,7 +1,8 @@
 # Testing Strategy — TypingMind Excel Engine
 
 > Cómo se prueba el proyecto, qué cubre cada suite y qué no es automatizable hoy.
-> Resultados ejecutados y verificados el **2026‑09‑30** (commit `5067b16`).
+> Resultados ejecutados y verificados el **2026‑09‑30** (código de producto de `5067b16`, sin cambios
+> en `425e5fd`, que solo añade documentación).
 
 ## Principios
 
