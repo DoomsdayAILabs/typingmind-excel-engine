@@ -76,16 +76,24 @@ Resultado (<n> de <total> filas):
 
 ## Guardrail de solo lectura
 
-1. Se eliminan comentarios `/* … */` y `-- …` antes de evaluar.
-2. Se bloquea por regex con límites de palabra:
-   `drop|alter|insert|update|delete|attach|copy|export|create|pragma force`.
-3. **Es textual**: también salta con esas palabras dentro de identificadores o literales.
+`implementation.js` (bloque de guardrail, líneas 35-103) aplica **cuatro comprobaciones en cadena** y no
+envía nada al motor si alguna falla:
 
-Permitidas de facto: `SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE` (y cualquier sentencia que no
-contenga las palabras bloqueadas — ver el riesgo documentado en `progress.md`).
+1. **Saneado en una pasada (`saneaSQL`)** — elimina los comentarios (de bloque y de línea) y vacía los
+   literales (`'...'` y `"..."`) conservando sus delimitadores; informa además de si quedó un literal sin
+   cerrar. Así las palabras reservadas dentro de literales o de identificadores dejan de ser falsos
+   positivos.
+2. **Lista blanca (`LIMITADO`)** — la sentencia debe empezar por `SELECT`, `WITH`, `EXPLAIN`, `SHOW` o
+   `DESCRIBE`.
+3. **Lista negra (`PROHIBIDO`)** — sobre el texto saneado: escritura, DDL, DCL y administración del motor
+   (incluye `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`, `PRAGMA`, `MERGE`,
+   `USE`, `TRANSACTION`…).
+4. **Sentencias apiladas y literales sin cerrar** — cualquier `;` fuera de literales (más allá del
+   separador final opcional) invalida la consulta: una llamada = una sentencia.
 
-El spec instruye al modelo a construir las palabras prohibidas por concatenación (`'DEL' || 'ETE'`)
-si necesita comparar con esos valores.
+Consecuencias asumidas: `PRAGMA` queda bloqueado (también el de solo lectura `PRAGMA table_info(...)`; el
+esquema se consulta con `DESCRIBE` o `information_schema`) y no se admite empezar por paréntesis
+(`(SELECT ...)`). El mensaje de rechazo es el documentado en § Contrato de la función del plugin.
 
 ## Tablas que el modelo debe asumir
 
@@ -149,8 +157,10 @@ JOIN excel_data_ventas_2024 v ON d.id = v.id WHERE v.importe > 150;
 
 ## Por confirmar
 
-- Si el endurecimiento del guardrail (bloquear también `TRUNCATE`, `INSTALL`, `LOAD`, `SET`,
-  `VACUUM`, `CHECKPOINT`…) es deseable o si la lista actual es una decisión asumida.
+- Si el bloqueo de `PRAGMA` de solo lectura (`PRAGMA table_info(...)`) resulta incómodo en uso real: en
+  Fase 8 se decidió bloquearlo y resolver el esquema con `DESCRIBE` / `information_schema` (ver
+  § Guardrail de solo lectura). El endurecimiento de `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `VACUUM` y
+  `CHECKPOINT` **ya está aplicado** (`be03349`).
 - Si la integración real de TypingMind acepta el *broadcast* a iframes como camino alternativo
   (código de la extensión, líneas 113‑117): no hay evidencia de prueba en el repo de ese camino,
   solo del `event.source` (la suite de Fase 3B emite eventos en la propia ventana).

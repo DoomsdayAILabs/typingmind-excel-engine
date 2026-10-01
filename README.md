@@ -91,8 +91,11 @@ que añade un motor de base de datos analítico dentro de la propia interfaz:
 
 ### 🤖 IA autónoma (plugin)
 - **Function calling** con la herramienta `query_excel_data`.
-- **Solo lectura:** el plugin sanea el SQL (elimina comentarios) y bloquea `DROP`, `ALTER`, `INSERT`,
-  `UPDATE`, `DELETE`, `CREATE`, `COPY`, `ATTACH`, `PRAGMA FORCE`… Solo `SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`.
+- **Solo lectura:** el plugin sanea el SQL en una pasada (fuera comentarios y literales), exige que la
+  sentencia empiece por `SELECT`, `WITH`, `EXPLAIN`, `SHOW` o `DESCRIBE` (lista blanca) y aplica después
+  la lista negra (escritura, DDL, DCL y administración: `DROP`, `ALTER`, `INSERT`, `UPDATE`, `DELETE`,
+  `TRUNCATE`, `CREATE`, `COPY`, `ATTACH`, `EXPORT`, `INSTALL`, `LOAD`, `SET`, `PRAGMA`, `CALL`, `VACUUM`,
+  `CHECKPOINT`…). Las sentencias apiladas (`;`) se rechazan. Ver § Seguridad y privacidad.
 - **Puente `postMessage`** en el canal `tm-excel-engine`: el iframe *sandbox* del plugin pide la
   consulta a la extensión y recibe las filas serializadas.
 - **Respuestas autolimitadas:** el plugin recorta a **50 filas** y devuelve Markdown escapado, para
@@ -376,7 +379,8 @@ no recargues la página).
 | Ubicación de los datos | Memoria del navegador (VFS de DuckDB dentro del Worker). Nunca se suben. |
 | Persistencia | Ninguna: al recargar la página se pierde todo (el VFS se limpia con `dropFile`). |
 | Permisos de red | Solo para descargar los binarios de DuckDB‑WASM y SheetJS desde jsDelivr. |
-| Superficie de escritura de la IA | Bloqueada: el plugin solo acepta consultas de lectura (`SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`) y rechaza cualquier otra sentencia. |
+| Superficie de escritura de la IA | Bloqueada en dos capas: **lista blanca** (la sentencia debe empezar por `SELECT`, `WITH`, `EXPLAIN`, `SHOW` o `DESCRIBE`) y **lista negra** aplicada después de sanear comentarios y literales, que cubre además la administración del motor (`DROP`, `ALTER`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `CREATE`, `COPY`, `ATTACH`, `EXPORT`, `INSTALL`, `LOAD`, `SET`, `PRAGMA`, `CALL`, `VACUUM`, `CHECKPOINT`…). |
+| Sentencias apiladas (`;`) | Rechazadas: un punto y coma fuera de un literal invalida la consulta, así que **una llamada del plugin ejecuta una sola sentencia**. |
 | Credenciales | El plugin es `AUTH_TYPE_NONE`; no hay claves ni tokens. |
 | Alcance del plugin | Corre en un iframe *sandbox* sin acceso al motor: solo intercambia texto por `postMessage`. |
 | Qué ve el LLM | Únicamente lo que llega al chat: tu pregunta y las tablas Markdown (≤ 50 filas) que inyectes o que el plugin devuelva por una consulta concreta. |

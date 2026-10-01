@@ -72,12 +72,28 @@ para no enmascarar el fallo real con el de la limpieza. Las **tablas** sobrevive
 - Los temporales se borran todos en el `finally`; una tabla parcial se descarta con
   `DROP TABLE IF EXISTS` best‑effort (`descartarTablaParcial`).
 
-### 7. Guardrail de solo lectura en el plugin (lista negra textual)
-`implementation.js` (líneas 22‑25): elimina comentarios `/* */` y `--`, y bloquea por regex
-`\b(drop|alter|insert|update|delete|attach|copy|export|create|pragma force)\b`.
-Es **textual**: también salta con esas palabras dentro de identificadores o literales
-(`SELECT "Update" …`), y el spec instruye al modelo a construir esas palabras por concatenación
-(`'DEL' || 'ETE'`). El bloqueo vive **solo en el plugin**; el widget no restringe al usuario.
+### 7. Guardrail de solo lectura en el plugin (lista blanca + saneado)
+`implementation.js` (bloque de guardrail, líneas 35-103) valida en cadena antes de enviar nada al motor:
+
+1. **Saneado en una pasada (`saneaSQL`)** — un solo recorrido devuelve el SQL con los comentarios (de
+   bloque y de línea) sustituidos por un espacio y los **literales vaciados** (`'x'` → `''`, `"x"` →
+   `""`), conservando los delimitadores para no alterar los límites de palabra; acumula con `slice`
+   (fragmentos, no carácter a carácter). Devuelve también `literalAbierto` para detectar comillas sin
+   cerrar.
+2. **Lista blanca (`LIMITADO`)** — `^(select|with|explain|show|describe)\b` sobre el texto saneado.
+3. **Lista negra (`PROHIBIDO`)** — sobre el texto saneado: escritura, DDL, DCL y administración
+   (`drop`, `alter`, `insert`, `update`, `delete`, `truncate`, `create`, `merge`, `attach`, `detach`,
+   `copy`, `export`, `import`, `install`, `load`, `call`, `set`, `reset`, `vacuum`, `checkpoint`,
+   `pragma`, `grant`, `revoke`, `use`, `begin`, `commit`, `rollback`, `transaction`, `prepare`,
+   `execute`, `deallocate`).
+4. **Apiladas y literales sin cerrar** — un `;` fuera de literales (más allá del separador final
+   opcional) o `literalAbierto` ⇒ rechazo. Una llamada = una sentencia.
+
+Efecto medido (banco de 67 consultas contra el archivo real): **0 falsos positivos** —los literales y los
+identificadores entrecomillados ya no disparan la lista negra— y **0 falsos negativos** —se cierran
+`TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`, `PRAGMA force_checkpoint`, `MERGE`,
+`USE`, `BEGIN`, las sentencias apiladas y los dos modos de ocultar el verbo tras un comentario o un
+literal—. Todo el guardrail vive **solo en el plugin**; el widget no restringe al usuario.
 
 ### 8. Puente postMessage sin estado
 Cada llamada del plugin registra su propio listener y lo **retira** al resolver (evita acumulación de

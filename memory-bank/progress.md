@@ -2,7 +2,7 @@
 
 > Qué funciona, qué falta, estado actual e issues conocidos.
 > Estado evaluado el **2026‑09‑30**; commits del producto **`d876db4`** (Fase 6 · UI desplegada) y
-> **`686a46e`** (Fase 7 · pin de SheetJS `0.18.5` + guardrail y README con `SHOW`/`DESCRIBE`) más el
+> **`be03349`** (Fase 8 · guardrail robusto del plugin: saneado + lista blanca + lista negra ampliada) más el
 > commit de documentación que sincroniza este Memory Bank.
 
 ## Estado actual
@@ -14,7 +14,9 @@ tres suites headless están en verde (**85/85**, 44/44 y 25/25) y GitHub Pages s
 (cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**527 líneas**) ya no describe
 archivos inexistentes, declara la licencia MIT oficial y sus listas de sentencias permitidas y de
 descubrimiento de esquema coinciden con el plugin real. El repositorio está **limpio y sincronizado**
-con `origin/main`.
+con `origin/main`. **Fase 8 (`be03349`):** el guardrail del plugin pasa de lista negra textual a cuatro
+comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo de apiladas), con
+**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas.
 
 ## Qué funciona (verificado)
 
@@ -56,10 +58,14 @@ con `origin/main`.
 
 ### Plugin IA
 - `query_excel_data` declarada en el nivel superior (requisito de TypingMind), `plugin.json` válido.
-- Guardrail de solo lectura (el mensaje lista `SELECT`, `WITH`, `EXPLAIN`, `SHOW` y `DESCRIBE`), timeout
-  de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas.
+- Guardrail de solo lectura **Fase 8** (bloque de guardrail, líneas 35-103): saneado de comentarios y
+  literales en una pasada (`saneaSQL`) + lista blanca (`SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`) +
+  lista negra ampliada + rechazo de sentencias apiladas y de literales sin cerrar; **0 FP / 0 FN** sobre el
+  banco de 67 consultas. Timeout de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas (contrato
+  verificado 22/22).
 - Spec multi‑hoja con descubrimiento de tablas (`information_schema.tables` / `SHOW TABLES`,
-  `DESCRIBE` / `information_schema.columns`) y aviso del saneado textual del guardrail.
+  `DESCRIBE` / `information_schema.columns`); ya **no** advierte sobre palabras reservadas dentro de
+  literales ni pide concatenar con `||` (el saneado lo hace innecesario).
 - **Multi‑hoja: 100 % (Plugin IA).** El spec descubre todas las tablas del libro y trabaja
   indistintamente con `excel_data` y `excel_data_<hoja>` sin cambios adicionales.
 
@@ -73,6 +79,8 @@ con `origin/main`.
 | `node --check` (worker, plugin, extensión) | 3 | **OK (exit 0 ×3)** |
 | jsDelivr: `xlsx@0.18.5` vs. URL sin pin (`HEAD`) | 1 | **881 727 bytes idénticos** |
 | BOM/CRLF/líneas (README, worker, implementation) | 3 | **sin BOM añadido, 0 LF sueltos, sin doble codificación** |
+| Banco del guardrail (67 consultas sobre el plugin real) | 67 | **0 FP / 0 FN** |
+| Contrato del plugin (canal, 30 s, Markdown, 50 filas) | 22 | **22/22 OK** |
 
 ## Deriva de documentación (corregida)
 
@@ -122,15 +130,20 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
   `excel_data_<hoja>` de un libro anterior con más pestañas (documentado en README líneas 379‑385).
   El **selector de hojas no las muestra** (se construye desde `result.hojas` del libro vigente), pero
   siguen siendo consultables con `SHOW TABLES` y desde la consola SQL.
-- **Guardrail = lista negra textual.** Solo se bloquean `drop`, `alter`, `insert`, `update`, `delete`,
-  `create`, `copy`, `attach`, `export`, `pragma force`. Otras sentencias de DuckDB que no estén en esa
-  lista y no sean de lectura (p. ej. `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `VACUUM`, `CHECKPOINT`)
-  **no son rechazadas por el plugin**. El README documenta la lista como el mecanismo de defensa, así
-  que **está por confirmar si es un límite asumido o un endurecimiento pendiente**.
-  *Nota:* el widget (uso manual) ejecuta cualquier sentencia a propósito: la restricción solo aplica a
-  lo que la IA puede lanzar por sí misma.
-- **Falsos positivos del guardrail:** bloquea también si una de esas palabras aparece dentro de un
-  identificador o literal (`SELECT "Update" FROM …`) — documentado y mitigado en el prompt del spec.
+- ~~**Guardrail = lista negra textual.**~~ **Resuelto en `be03349` (Fase 8).** El guardrail es ahora lista
+  blanca (`SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`) + saneado de comentarios y literales + lista
+  negra ampliada, que sí bloquea `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`,
+  `PRAGMA`, `MERGE`, `USE`, `BEGIN`/`COMMIT`/`ROLLBACK`… además de las que ya bloqueaba.
+  *Nota:* el widget (uso manual) sigue ejecutando cualquier sentencia a propósito: la restricción solo
+  aplica a lo que la IA puede lanzar por sí misma.
+- ~~**Falsos positivos del guardrail.**~~ **Resuelto en `be03349` (Fase 8):** los literales
+  (`WHERE estado = 'DELETE'`) y los identificadores entrecomillados (`SELECT "Update" FROM …`) ya **no** se
+  bloquean, porque `saneaSQL` vacía los literales antes de aplicar la lista negra. El spec del plugin ya no
+  pide al modelo evitar esas palabras ni concatenar con `||`.
+- **Riesgo residual del guardrail textual (Fase 8):** es heurístico, no un parser SQL. Los dos modos de
+  ocultar un verbo destructivo (tras un comentario o tras un literal con comilla dentro de `$$...$$`) se
+  cierran con el saneado en una pasada y el rechazo de literales sin cerrar; el endurecimiento estructural
+  (conexión DuckDB restringida para el plugin) queda como línea futura.
 - **Sin persistencia:** recargar la página descarta datos y motor.
 - **`file://` no funciona** para pruebas: hace falta servidor local.
 - **Dependencia de jsDelivr** en el primer arranque (CDN bloqueado ⇒ motor inoperante).
@@ -157,6 +170,8 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 | Memory Bank sincronizado con Fase 6 y README purgado (deriva + licencia MIT) | commit de docs posterior a `d876db4` |
 | **Fase 7 · deps/docs**: pin de SheetJS `0.18.5` + guardrail y README con `SHOW`/`DESCRIBE` | `686a46e` |
 | Memory Bank sincronizado con Fase 7 (dependencias fijadas y referencias de README) | commit de docs posterior a `686a46e` |
+| **Fase 8 · plugin**: guardrail robusto (saneado + lista blanca + lista negra ampliada + apiladas) | `be03349` |
+| Memory Bank sincronizado con Fase 8 (guardrail, spec y docs) | commit de docs posterior a `be03349` |
 
 ## Por confirmar
 

@@ -92,6 +92,33 @@ WHERE v.importe > 150;
 (verificado en runtime con `SHOW TABLES;`, `information_schema.tables/.columns`, `DESCRIBE` y un
 `JOIN` entre pestañas).
 
+## Guardrail de solo lectura (Fase 8)
+
+`implementation.js` valida el SQL con **cuatro comprobaciones en cadena** antes de enviarlo al motor
+(bloque de guardrail, líneas 35-103):
+
+1. **Saneado en una pasada (`saneaSQL`)** — un único recorrido devuelve el texto con los **comentarios**
+   (de bloque y de línea) eliminados y los **literales** (`'...'` y `"..."`) vaciados, conservando sus
+   delimitadores para no alterar los límites de palabra. Consecuencia doble: comparar o citar una palabra
+   reservada ya **no** es un falso positivo (`WHERE estado = 'DELETE'`, `SELECT "Update" FROM
+   excel_data`) y un verbo destructivo oculto tras un comentario o un literal deja de escaparse. Si el
+   literal queda **sin cerrar**, el escaneo no es fiable y la consulta se rechaza.
+2. **Lista blanca (`LIMITADO`)** — `^(select|with|explain|show|describe)\b` sobre el texto saneado: la
+   sentencia debe empezar por una de las cinco formas de lectura.
+3. **Lista negra (`PROHIBIDO`)** — sobre el texto saneado bloquea escritura, DDL, DCL y administración del
+   motor: `drop`, `alter`, `insert`, `update`, `delete`, `truncate`, `create`, `merge`, `attach`,
+   `detach`, `copy`, `export`, `import`, `install`, `load`, `call`, `set`, `reset`, `vacuum`,
+   `checkpoint`, `pragma`, `grant`, `revoke`, `use`, `begin`, `commit`, `rollback`, `transaction`,
+   `prepare`, `execute`, `deallocate`.
+4. **Sentencias apiladas** — si queda algún punto y coma fuera de los literales (más allá del separador
+   final opcional), la consulta se rechaza: **una llamada = una sentencia**.
+
+Decisiones asumidas: `PRAGMA` queda bloqueado (para el esquema, `DESCRIBE` o `information_schema`) y la
+consulta debe empezar por palabra clave formal (no se admite `(SELECT ...)`). `replace()` y
+`EXPLAIN ANALYZE` siguen permitidos (no son sentencias) y el mensaje de rechazo es siempre el documentado
+en § Contrato del puente. El guardrail es textual; la consola SQL del **widget** ejecuta cualquier
+sentencia a propósito, porque es el motor local del propio usuario.
+
 ## Contrato del puente `postMessage`
 
 Sobre de petición (plugin → motor, `window.parent`):
@@ -133,11 +160,9 @@ Notas de implementación:
 ## Límites
 
 - Solo lectura (`SELECT` / `WITH` / `EXPLAIN` / `SHOW` / `DESCRIBE`) contra las tablas locales
-  (`excel_data` + `excel_data_<hoja>`): el plugin limpia comentarios y bloquea `DROP`, `ALTER`,
-  `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `COPY`, `ATTACH`, `EXPORT`, `PRAGMA FORCE`… El bloqueo es
-  **textual**, así que también salta si una de esas palabras aparece dentro de un identificador o de
-  un literal (`SELECT "Update" FROM …` o `WHERE estado = 'DELETE'`); conviene evitarlas incluso
-  entre comillas.
+  (`excel_data` + `excel_data_<hoja>`): ver § Guardrail de solo lectura (Fase 8) para las cuatro
+  comprobaciones en cadena (saneado de comentarios y literales, lista blanca `LIMITADO`, lista negra
+  `PROHIBIDO` y rechazo de sentencias apiladas y de literales sin cerrar).
 - El plugin recorta el resultado a **50 filas** y escapa `|` y saltos de línea para no romper el Markdown.
 - Si el motor no está cargado o no hay Excel, el plugin devuelve un error claro al LLM.
 - Requiere que la **Extensión** esté activa en la misma pestaña del chat y que se haya cargado un

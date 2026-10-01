@@ -1,9 +1,20 @@
 # Active Context — TypingMind Excel Engine
 
 > Foco de trabajo actual, cambios recientes, siguientes pasos y decisiones activas.
-> Última actualización: **2026‑09‑30** (Fase 7 · pin de SheetJS `0.18.5`, guardrail y README sincronizados).
+> Última actualización: **2026‑09‑30** (Fase 8 · guardrail blindado del plugin, commit `be03349`; 0 FP / 0 FN sobre el banco de 67 consultas).
 
 ## Foco actual
+
+**Fase 8 completada: el guardrail del plugin deja de ser una lista negra textual.** `plugin/implementation.js`
+reescribe la validación en cuatro comprobaciones en cadena: saneado de comentarios y literales en una pasada
+(`saneaSQL`), lista blanca `LIMITADO` (`SELECT`/`WITH`/`EXPLAIN`/`SHOW`/`DESCRIBE`), lista negra ampliada
+`PROHIBIDO` y rechazo de sentencias apiladas y de literales sin cerrar. Medido sobre un banco de **67
+consultas**: **0 falsos positivos** (antes 14: literales como `WHERE estado = 'DELETE'` e identificadores
+como `SELECT "Update"`) y **0 falsos negativos** (antes 16: `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`,
+`VACUUM`, `CHECKPOINT`, `PRAGMA force_checkpoint`, `MERGE`, `USE`, `BEGIN`, sentencias apiladas y dos modos
+de ocultar el verbo tras un comentario o un literal). El contrato del plugin (canal, timeout de 30 s,
+Markdown ≤ 50 filas y mensajes) queda intacto (22/22 comprobaciones) y las tres suites headless siguen en
+verde. Commit del producto: **`be03349`**.
 
 **Fase 7 completada: estabilidad de dependencias y consistencia documental.** SheetJS queda **fijado a
 `0.18.5`** en el Worker (constante `SHEETJS_PACKAGE`; era la única dependencia sin pin), el guardrail
@@ -15,12 +26,12 @@ Plugin IA y UI).
 
 ## Estado del repositorio (verificado en esta sesión)
 
-- Commit del producto (Fase 7 · dependencias y docs): **`686a46e`** — `fix(deps): pin SheetJS a 0.18.5
-  y sincronizar guardrail y docs con SHOW/DESCRIBE` (3 archivos, 11 inserciones, 6 borrados).
-- Commit previo del producto (Fase 6 · UI): **`d876db4`** (selector multi-hoja; suite de 85 checks).
-- Este documento se actualiza en el commit `docs: sincronizar memory-bank con pin de SheetJS 0.18.5 y
-  referencias de README`, inmediatamente posterior a `686a46e`.
-- **Working tree limpio** y rama `main` sincronizada con `origin/main` antes y después del push.
+- Commit del producto (Fase 8 · guardrail): **`be03349`** — `feat(plugin): guardrail robusto de solo
+  lectura con lista blanca y saneado de literales (Fase 8)` (1 archivo, +81 / -2).
+- Commits previos del producto: **`686a46e`** (Fase 7 · pin de SheetJS `0.18.5`) y **`d876db4`** (Fase 6 · UI).
+- Este documento se actualiza en el commit `docs: sincronizar spec de plugin, docs y memory-bank con
+  guardrail Fase 8`, inmediatamente posterior a `be03349`.
+- **Working tree limpio** y rama `main` sincronizada con `origin/main` tras el push.
 - Sin `package.json`, sin CI, sin `.github/`. Repo estático servido por GitHub Pages.
 - La extensión se mantiene en **849 líneas**; el Worker pasa a **600 líneas** al añadir la constante
   `SHEETJS_PACKAGE` y `importScripts(SHEETJS_PACKAGE)`.
@@ -33,6 +44,8 @@ Plugin IA y UI).
 | Suite Fase 6 | `node tests/run-headless.js tests/fase6-multisheet-verificacion.html` | **85/85 OK** (exit 0) |
 | Suite Fase 5 | `node tests/run-headless.js tests/fase5-verificacion.html` | **44/44 OK** (exit 0) |
 | Suite Fase 3B | `node tests/run-headless.js tests/fase3b-verificacion.html` | **25/25 OK** (exit 0) |
+| Banco del guardrail (67 consultas sobre el plugin real) | `node -` (arnés `vm` en memoria) | **0 FP / 0 FN** (exit 0) |
+| Contrato del plugin (canal, 30 s, Markdown, 50 filas) | mismo arnés sobre `plugin/implementation.js` | **22/22 OK** (exit 0) |
 | Push al remoto | `git ls-remote origin main` → hash de `686a46e` y del commit de docs | remoto sincronizado |
 | GitHub Pages | descarga de `typingmind-excel-engine-v1.0.js` desde Pages | cabecera **“Fase 6”** (la extensión no cambió en Fase 7) |
 | Artefacto de jsDelivr | `HEAD .../xlsx@0.18.5/dist/xlsx.full.min.js` vs. URL sin pin | 200 · **881 727 bytes en ambos** (equivalencia exacta) |
@@ -64,17 +77,25 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 8. **El README ya está purgado:** se eliminaron las referencias a `index.html`, `.nojekyll`, `backup/`
    y `duckdb/`, y la sección de licencia declara la **MIT oficial** (`LICENSE`, © 2026
    DoomsdayAILabs).
+9. **Guardrail del plugin (Fase 8) con cuatro decisiones asumidas:** `PRAGMA` bloqueado (el esquema se
+   consulta con `DESCRIBE` o `information_schema`), prohibida la forma `(SELECT ...)` (la sentencia debe
+   empezar por palabra clave formal), sin soporte de cadenas `$$...$$` (escáner simple y determinista) y
+   rechazo estricto de sentencias apiladas (`;` fuera de literales): una llamada = una consulta.
 
 ## Próximos pasos candidatos (no iniciados, por prioridad sugerida)
 
-1. **Endurecer el guardrail del plugin**: valorar lista blanca o incluir `TRUNCATE`, `INSTALL`, `LOAD`,
-   `SET`, `VACUUM` y `CHECKPOINT`, que hoy no se rechazan.
+1. ~~**Endurecer el guardrail del plugin**~~ **Completado en `be03349` (Fase 8):** lista blanca + saneado
+   de comentarios y literales + lista negra ampliada (escritura, DDL, DCL y administración) + bloqueo de
+   sentencias apiladas; 0 FP / 0 FN sobre el banco de 67 consultas.
 2. **Cerrar el hueco de la suite SQL manual:** incorporar fixtures mínimos (o generar un CSV/XLSX en
    memoria) para que `tests/sql-test-runner.html` (38 casos) sea ejecutable en headless.
 3. **Decidir si se restaura `index.html`** como historial de versiones descargables: ya no se anuncia
    en el README, así que pasó de ser una deriva documental a una decisión de producto.
 4. **Título de `tests/sql-test-runner.html`:** sigue anunciando "v0.4.20" con el producto en v1.0 (la
    única deriva documental que queda, ver `progress.md`).
+5. **Suite headless del guardrail:** portar el banco de 67 consultas a
+   `tests/fase8-guardrail-verificacion.html` (convención `RES:`) para que la cobertura del plugin entre en
+   la batería automática (ver `testing-strategy.md` § Pendiente recomendado).
 
 ## Patrones y aprendizajes de esta sesión
 
@@ -119,8 +140,10 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 
 - **SheetJS fijado pero sin SRI:** el pin a `0.18.5` elimina la deriva de versión, pero `importScripts`
   no admite `integrity`, así que un compromiso del CDN no se detectaría (ver `techContext.md`).
-- **Guardrail por lista negra** en el plugin: solo bloquea las palabras listadas (ver
-  `progress.md` § Issues y riesgos conocidos).
+- **Guardrail textual (no es un parser SQL):** la Fase 8 lo endurece (lista blanca + saneado + lista negra
+  ampliada + bloqueo de apiladas) con 0 FP / 0 FN sobre el banco de 67 consultas, pero sigue siendo
+  heurístico. Queda como línea futura el endurecimiento estructural: una conexión DuckDB restringida para
+  el plugin, que hoy comparte conexión con la consola manual del usuario.
 - **Datos de ejemplo ausentes**: la suite SQL más completa (**38 casos** en dos baterías) requiere
   selección manual de archivos que ya no están en el repo → no es ejecutable sin intervención humana.
 - **Selector silencioso con una sola hoja cargada:** si el libro tiene una única hoja con datos, la
