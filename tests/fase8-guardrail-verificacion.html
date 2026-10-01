@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verificación Fase 8 (guardrail de solo lectura del plugin)</title>
+  <style>
+    body { background: #111318; color: #f3f4f6; font-family: sans-serif; }
+    #verify-results { font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Verificación Fase 8 — guardrail del plugin (banco de 67 consultas + contrato)</h1>
+
+  <div id="verify-results"></div>
+
+  <script>
+    // --- Stubs del entorno del plugin (iframe sandbox de TypingMind) ---
+    // El plugin habla con el motor por `window.parent.postMessage` y registra un listener
+    // de "message" por llamada. En una página de nivel superior `window.parent === window`,
+    // así que interceptar `window.postMessage` captura el sobre; además se stubean los
+    // listeners y el temporizador para no esperar los 30 s del timeout real.
+    window.__posted = [];                    // sobres enviados al motor
+    window.__listeners = [];                 // listeners "message" vivos
+    window.__timers = [];                    // temporizadores programados por el plugin
+    window.__setTimeoutReal = window.setTimeout.bind(window);
+
+    window.postMessage = function (msg) { window.__posted.push(msg); };
+    window.addEventListener = function (tipo, fn) {
+      if (tipo === "message") window.__listeners.push(fn);
+    };
+    window.removeEventListener = function (tipo, fn) {
+      if (tipo !== "message") return;
+      const i = window.__listeners.indexOf(fn);
+      if (i >= 0) window.__listeners.splice(i, 1);
+    };
+    window.setTimeout = function (fn, ms) {
+      const id = window.__timers.length + 1;
+      window.__timers.push({ id: id, fn: fn, ms: ms, cancelado: false });
+      return id;
+    };
+    window.clearTimeout = function (id) {
+      for (const t of window.__timers) if (t.id === id) t.cancelado = true;
+    };
+  </script>
+
+  <!-- Ejecutar: node tests/run-headless.js tests/fase8-guardrail-verificacion.html
+       o directamente: chrome --headless=new --dump-dom --window-size=900,760 --virtual-time-budget=30000 "file:///<ruta-repo>/tests/fase8-guardrail-verificacion.html"
+       (el resultado se publica en document.title como JSON codificado) -->
+  <script src="../plugin/implementation.js"></script>
+
+  <script>
+    const resultados = { checks: [], logs: [] };
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+    const esperar = (ms) => new Promise((r) => window.__setTimeoutReal(r, ms));
+
+    const MSG_GUARDRAIL = "Error: Solo se permiten consultas de lectura (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE).";
+    const MSG_VALIDACION = "Error: Consulta SQL no válida o vacía. Asegúrate de generar una consulta SELECT.";
+    const MSG_TIMEOUT = "Error: Timeout. El motor local no respondió. Verifica que la extensión esté cargada y un archivo Excel esté procesado.";
+    const MSG_VACIO = "Consulta ejecutada con éxito (0 resultados).";
+
+    // Banco de 67 consultas clasificadas en tres grupos:
+    //   valida         → consultas de lectura que deben pasar el guardrail.
+    //   falso_positivo → consultas legítimas que se BLOQUEABAN antes de la Fase 8 porque
+    //                    contenían palabras reservadas dentro de un literal o de un
+    //                    identificador entrecomillado (o un `--` dentro de un literal).
+    //   bloqueada      → escritura, DDL, DCL, administración, sentencias apiladas y
+    //                    literales sin cerrar: deben rechazarse.
+    // `want` es el desenlace exigido al guardrail del plugin real.
+    const BANCO = [
+      { id: 1, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data LIMIT 5" },
+      { id: 2, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE estado = 'DELETE'" },
+      { id: 3, grupo: "falso_positivo", want: "allow", sql: 'SELECT "Update" FROM excel_data' },
+      { id: 4, grupo: "falso_positivo", want: "allow", sql: 'SELECT "Update Date", total FROM excel_data ORDER BY "Update Date"' },
+      { id: 5, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE texto LIKE '%create%'" },
+      { id: 6, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE accion = 'INSERT INTO log'" },
+      { id: 7, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE motivo = 'DROP TABLE'" },
+      { id: 8, grupo: "falso_positivo", want: "allow", sql: "SELECT COUNT(*) FROM excel_data WHERE operacion = 'Attach'" },
+      { id: 9, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE tipo = 'Export'" },
+      { id: 10, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE tipo = 'Copy'" },
+      { id: 11, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE tipo = 'Create'" },
+      { id: 12, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE autor = 'Alter Ego'" },
+      { id: 13, grupo: "falso_positivo", want: "allow", sql: "WITH d AS (SELECT * FROM excel_data WHERE estado = 'DELETE') SELECT COUNT(*) FROM d" },
+      { id: 14, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE descripcion = 'delete de registros'" },
+      { id: 15, grupo: "valida", want: "allow", sql: "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'" },
+      { id: 16, grupo: "valida", want: "allow", sql: "-- nota\nSELECT * FROM excel_data LIMIT 1;" },
+      { id: 17, grupo: "valida", want: "allow", sql: "/* comentario */ DESCRIBE excel_data" },
+      { id: 18, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data WHERE nota = 'valor -- con guiones'" },
+      { id: 19, grupo: "falso_positivo", want: "allow", sql: "SELECT * FROM excel_data WHERE campo = 'a; DROP TABLE excel_data; --'" },
+      { id: 20, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data WHERE total > 100" },
+      { id: 21, grupo: "bloqueada", want: "block", sql: "TRUNCATE TABLE excel_data" },
+      { id: 22, grupo: "bloqueada", want: "block", sql: "INSTALL httpfs" },
+      { id: 23, grupo: "bloqueada", want: "block", sql: "LOAD httpfs" },
+      { id: 24, grupo: "bloqueada", want: "block", sql: "SET memory_limit = '1GB'" },
+      { id: 25, grupo: "bloqueada", want: "block", sql: "CALL pragma_version()" },
+      { id: 26, grupo: "bloqueada", want: "block", sql: "VACUUM" },
+      { id: 27, grupo: "bloqueada", want: "block", sql: "CHECKPOINT" },
+      { id: 28, grupo: "bloqueada", want: "block", sql: "DROP TABLE excel_data" },
+      { id: 29, grupo: "bloqueada", want: "block", sql: "DELETE FROM excel_data" },
+      { id: 30, grupo: "bloqueada", want: "block", sql: "INSERT INTO excel_data VALUES (1)" },
+      { id: 31, grupo: "bloqueada", want: "block", sql: "UPDATE excel_data SET x = 1" },
+      { id: 32, grupo: "bloqueada", want: "block", sql: "CREATE TABLE t (a INT)" },
+      { id: 33, grupo: "bloqueada", want: "block", sql: "ALTER TABLE excel_data ADD COLUMN z INT" },
+      { id: 34, grupo: "bloqueada", want: "block", sql: "ATTACH 'x.db'" },
+      { id: 35, grupo: "bloqueada", want: "block", sql: "COPY excel_data TO 'out.csv'" },
+      { id: 36, grupo: "bloqueada", want: "block", sql: "EXPORT DATABASE 'dir'" },
+      { id: 37, grupo: "bloqueada", want: "block", sql: "PRAGMA force_checkpoint" },
+      { id: 38, grupo: "bloqueada", want: "block", sql: "SELECT 1; TRUNCATE TABLE excel_data;" },
+      { id: 39, grupo: "bloqueada", want: "block", sql: "SELECT 1; DROP TABLE excel_data;" },
+      { id: 40, grupo: "bloqueada", want: "block", sql: "SELECT $$a' b$$ ; TRUNCATE TABLE excel_data;" },
+      { id: 41, grupo: "bloqueada", want: "block", sql: "SELECT * FROM excel_data WHERE n = '--' ; TRUNCATE TABLE excel_data;" },
+      { id: 42, grupo: "valida", want: "allow", sql: "SELECT * FROM read_csv_auto('https://x/y.csv')" },
+      { id: 43, grupo: "bloqueada", want: "block", sql: "PRAGMA table_info('excel_data')" },
+      { id: 44, grupo: "valida", want: "allow", sql: "EXPLAIN SELECT * FROM excel_data" },
+      { id: 45, grupo: "valida", want: "allow", sql: "SHOW TABLES" },
+      { id: 46, grupo: "valida", want: "allow", sql: "   \n  select 1" },
+      { id: 47, grupo: "valida", want: "allow", sql: "SELECT replace(nombre, 'a', 'b') FROM excel_data" },
+      { id: 48, grupo: "valida", want: "allow", sql: "EXPLAIN ANALYZE SELECT * FROM excel_data" },
+      { id: 49, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data WHERE n = ';'" },
+      { id: 50, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data;" },
+      { id: 51, grupo: "valida", want: "allow", sql: "SELECT 'it''s ok' AS x FROM excel_data" },
+      { id: 52, grupo: "valida", want: "allow", sql: 'SELECT "col""umn" FROM excel_data' },
+      { id: 53, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data -- comentario final" },
+      { id: 54, grupo: "valida", want: "allow", sql: "SELECT count(*) AS set_total FROM excel_data" },
+      { id: 55, grupo: "bloqueada", want: "block", sql: "(SELECT 1)" },
+      { id: 56, grupo: "bloqueada", want: "block", sql: "WITH c AS (SELECT 1 a) INSERT INTO excel_data SELECT a FROM c" },
+      { id: 57, grupo: "bloqueada", want: "block", sql: "WITH c AS (SELECT id FROM excel_data) DELETE FROM excel_data USING c WHERE excel_data.id = c.id" },
+      { id: 58, grupo: "bloqueada", want: "block", sql: "SELECT 1; SELECT 2;" },
+      { id: 59, grupo: "bloqueada", want: "block", sql: "ATTACH 'x' ; SELECT 1" },
+      { id: 60, grupo: "bloqueada", want: "block", sql: "EXPORT DATABASE 'dir' (FORMAT CSV)" },
+      { id: 61, grupo: "bloqueada", want: "block", sql: "SET VARIABLE x = 1" },
+      { id: 62, grupo: "bloqueada", want: "block", sql: "BEGIN TRANSACTION" },
+      { id: 63, grupo: "bloqueada", want: "block", sql: "MERGE INTO excel_data USING src ON 1=1" },
+      { id: 64, grupo: "bloqueada", want: "block", sql: "USE mydb" },
+      { id: 65, grupo: "valida", want: "allow", sql: "EXPLAIN SELECT * FROM excel_data WHERE tipo = 'TRUNCATE'" },
+      { id: 66, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data WHERE ruta = 'C:/datos/a--b'" },
+      { id: 67, grupo: "valida", want: "allow", sql: "SELECT * FROM excel_data WHERE nota = '50%' OR nota = '/x/'" }
+    ];
+
+    function limpiarEntorno() {
+      window.__posted.length = 0;
+      window.__listeners.length = 0;
+      window.__timers.length = 0;
+    }
+
+    // Ejecuta una consulta contra el plugin REAL. Si el guardrail la bloquea, la promesa ya
+    // viene resuelta y no hay sobre; si la permite, se responde como lo haría el motor
+    // (0 filas) para cerrar el viaje de ida y vuelta sin esperar los 30 s del timeout.
+    async function evaluar(sql) {
+      limpiarEntorno();
+      const promesa = query_excel_data({ sql_query: sql });
+      const sobres = window.__posted.length;
+      const sobre = sobres === 0 ? null : window.__posted[0];
+      const timers = window.__timers.slice();
+      if (!sobre) {
+        return { bloqueada: true, mensaje: await promesa, sobre: null, sobres: sobres, timers: timers, listeners: window.__listeners.length };
+      }
+      window.__listeners.slice().forEach((fn) => fn({ data: { channel: "tm-excel-engine", requestId: sobre.requestId, success: true, data: [] } }));
+      return { bloqueada: false, mensaje: await promesa, sobre: sobre, sobres: sobres, timers: timers, listeners: window.__listeners.length };
+    }
+
+    // Variante con respuesta a medida y/o parámetros alternativos (alias y sql no textual).
+    async function conversar(sql, payload, params) {
+      limpiarEntorno();
+      const promesa = query_excel_data(params || { sql_query: sql });
+      const sobre = window.__posted.length === 0 ? null : window.__posted[0];
+      if (sobre && payload) {
+        window.__listeners.slice().forEach((fn) => fn({ data: Object.assign({ channel: "tm-excel-engine", requestId: sobre.requestId }, payload) }));
+      }
+      return { promesa: promesa, sobre: sobre, timer: window.__timers[0] || null };
+    }
+
+    (async function run() {
+      // --- 0. Entorno de la suite ---
+      check("El plugin declara query_excel_data en el nivel superior", typeof query_excel_data === "function");
+      check("El sandbox usa window.parent === window (el stub intercepta el sobre)", window.parent === window);
+      check("El banco contiene exactamente 67 consultas", BANCO.length === 67, BANCO.length);
+
+      // --- 1. Banco de 67 consultas contra el plugin real ---
+      const grupos = { valida: 0, falso_positivo: 0, bloqueada: 0 };
+      let sobresMal = 0, viajesMal = 0, mensajesMal = 0, timerMal = 0;
+
+      for (const caso of BANCO) {
+        const r = await evaluar(caso.sql);
+        const clasificado = r.bloqueada === (caso.want === "block");
+        const mensajeOk = r.bloqueada ? r.mensaje === MSG_GUARDRAIL : r.mensaje === MSG_VACIO;
+        if (clasificado) grupos[caso.grupo]++;
+        if (r.bloqueada) {
+          if (!mensajeOk) mensajesMal++;
+        } else {
+          const s = r.sobre;
+          const sobreOk = !!s && s.channel === "tm-excel-engine" && s.action === "execute_sql" &&
+            s.sql === caso.sql && /^req_\d+_\d+$/.test(String(s.requestId)) && r.sobres === 1 && r.listeners === 0;
+          if (!sobreOk) sobresMal++;
+          if (!mensajeOk) viajesMal++;
+          if (!(r.timers.length === 1 && r.timers[0].ms === 30000)) timerMal++;
+        }
+        check(
+          "[#" + caso.id + " " + caso.grupo + "] " + caso.sql.replace(/\s+/g, " ").slice(0, 58),
+          clasificado && mensajeOk &&
+            (r.bloqueada || (r.sobres === 1 && r.listeners === 0 && r.timers.length === 1 && r.timers[0].ms === 30000)),
+          "resultado=" + (r.bloqueada ? "BLOCK" : "allow") + " mensaje=" + (mensajeOk ? "ok" : "distinto")
+        );
+      }
+
+      // --- 2. Resumen por grupos: 21 válidas + 14 falsos positivos resueltos + 32 bloqueadas ---
+      check("Grupo 'valida': las 21 consultas de lectura pasan", grupos.valida === 21, "ok=" + grupos.valida);
+      check("Grupo 'falso_positivo': las 14 consultas con literales/identificadores pasan", grupos.falso_positivo === 14, "ok=" + grupos.falso_positivo);
+      check("Grupo 'bloqueada': las 32 sentencias de riesgo se rechazan", grupos.bloqueada === 32, "ok=" + grupos.bloqueada);
+
+      // --- 3. Agregados del banco ---
+      check("Sobres postMessage bien formados (canal, acción, sql y requestId req_)", sobresMal === 0, "malformados=" + sobresMal);
+      check("Viaje de ida y vuelta completo en todas las consultas permitidas", viajesMal === 0, "fallos=" + viajesMal);
+      check("Mensaje exacto del guardrail en todas las consultas bloqueadas", mensajesMal === 0, "distintos=" + mensajesMal);
+      check("Timeout de 30 s programado en todas las consultas permitidas", timerMal === 0, "anómalos=" + timerMal);
+
+      // --- 4. Extras documentados en el spec (JOIN entre pestañas y ventana analítica) ---
+      const rJoin = await evaluar("SELECT d.nombre, v.importe FROM excel_data d JOIN excel_data_ventas_2024 v ON d.id = v.id WHERE v.importe > 150;");
+      check("[extra valida] JOIN entre pestañas del spec pasa el guardrail", !rJoin.bloqueada && rJoin.mensaje === MSG_VACIO);
+      const rVentana = await evaluar("SELECT ROW_NUMBER() OVER (ORDER BY total DESC) AS pos, nombre FROM excel_data LIMIT 10");
+      check("[extra valida] función analítica con OVER() pasa el guardrail", !rVentana.bloqueada && rVentana.mensaje === MSG_VACIO);
+
+      // --- 5. Contrato de query_excel_data (validación, timeout, sobre y formato) ---
+      const cVacia = await conversar("", null, {});
+      check("Contrato: sin sql devuelve el mensaje de validación exacto",
+        cVacia.promesa instanceof Promise && (await cVacia.promesa) === MSG_VALIDACION,
+        cVacia.sobre ? "publicó sobre" : "sin sobre");
+
+      const cNoTexto = await conversar("", null, { sql_query: 42 });
+      check("Contrato: sql_query no textual se rechaza", (await cNoTexto.promesa) === MSG_VALIDACION);
+
+      const cOk = await conversar("SELECT 1", { success: true, data: [] });
+      check("Contrato: devuelve una promesa (thenable)", cOk.promesa instanceof Promise);
+      check("Contrato: timeout registrado con 30 000 ms", !!cOk.timer && cOk.timer.ms === 30000, cOk.timer ? cOk.timer.ms : "sin temporizador");
+      check("Contrato: requestId con formato req_<timestamp>_<aleatorio>", /^req_\d+_\d+$/.test(String(cOk.sobre.requestId)), cOk.sobre.requestId);
+      check("Contrato: respuesta de 0 filas", (await cOk.promesa) === MSG_VACIO);
+      check("Contrato: listener retirado tras responder", window.__listeners.length === 0, window.__listeners.length);
+      check("Contrato: temporizador cancelado al responder", cOk.timer.cancelado === true);
+
+      limpiarEntorno();
+      const pAjeno = query_excel_data({ sql_query: "SELECT * FROM excel_data" });
+      let resueltoAjeno = false;
+      pAjeno.then(() => { resueltoAjeno = true; });
+      window.__listeners.slice().forEach((fn) => fn({ data: { channel: "tm-excel-engine", requestId: "req_ajeno", success: true, data: [] } }));
+      await esperar(0);
+      check("Contrato: ignora respuestas con un requestId ajeno", resueltoAjeno === false);
+      window.__listeners.slice().forEach((fn) => fn({ data: { channel: "tm-excel-engine", requestId: window.__posted[0].requestId, success: true, data: [] } }));
+      check("Contrato: acepta la respuesta con el requestId correcto", (await pAjeno) === MSG_VACIO);
+
+      const cMd = await conversar("SELECT * FROM excel_data", { success: true, data: [{ a: 1, b: "x|y" }, { a: 2, b: null }] });
+      check("Contrato: Markdown con | escapado y null como celda vacía",
+        (await cMd.promesa) === "Resultado (2 de 2 filas):\n\n| a | b |\n| --- | --- |\n| 1 | x\\|y |\n| 2 |  |\n");
+
+      const cSalto = await conversar("SELECT * FROM excel_data", { success: true, data: [{ a: "li\nne" }] });
+      check("Contrato: salto de línea en celda convertido en espacio",
+        (await cSalto.promesa) === "Resultado (1 de 1 filas):\n\n| a |\n| --- |\n| li ne |\n");
+
+      const filas60 = [];
+      for (let i = 0; i < 60; i++) filas60.push({ n: i });
+      const cTrunc = await conversar("SELECT * FROM excel_data", { success: true, data: filas60 });
+      const textoTrunc = await cTrunc.promesa;
+      check("Contrato: recorte a 50 filas con aviso del total",
+        textoTrunc.indexOf("Resultado (50 de 60 filas):") === 0 && textoTrunc.split("\n").length === 55,
+        "lineas=" + textoTrunc.split("\n").length);
+
+      const cError = await conversar("SELECT * FROM excel_data", { success: false, error: "fallo simulado" });
+      check("Contrato: error del motor devuelto como texto legible", (await cError.promesa) === "Error SQL del motor local: fallo simulado");
+
+      const cDatos = await conversar("SELECT * FROM excel_data", { success: true, data: "no-array" });
+      check("Contrato: datos no procesables", (await cDatos.promesa) === "Error interno: Datos no procesables.");
+
+      const cTimeout = await conversar("SELECT 1", null);
+      cTimeout.timer.fn();
+      check("Contrato: timeout de 30 s con el mensaje exacto", (await cTimeout.promesa) === MSG_TIMEOUT);
+      if (window.__listeners.length !== 0) {
+        resultados.logs.push("observacion: tras el timeout de 30 s el listener no se retira (el plugin solo lo retira al emparejar la respuesta)");
+      }
+
+      const cAliasSql = await conversar(null, { success: true, data: [] }, { sql: "SELECT * FROM excel_data" });
+      check("Contrato: alias params.sql aceptado", cAliasSql.sobre.sql === "SELECT * FROM excel_data" && (await cAliasSql.promesa) === MSG_VACIO);
+      const cAliasQuery = await conversar(null, { success: true, data: [] }, { query: "SHOW TABLES" });
+      check("Contrato: alias params.query aceptado", cAliasQuery.sobre.sql === "SHOW TABLES" && (await cAliasQuery.promesa) === MSG_VACIO);
+
+      // --- 6. Publicación del resultado para el runner headless ---
+      resultados.logs.push("checks=" + resultados.checks.length);
+      resultados.logs.push("banco=67 (21 validas + 14 falsos positivos resueltos + 32 bloqueadas) + 2 extras del spec");
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados);
+      document.title = "RES:" + encodeURIComponent(JSON.stringify(resultados));
+    })();
+  </script>
+
+</body>
+</html>
