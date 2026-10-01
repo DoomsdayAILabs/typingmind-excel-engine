@@ -436,6 +436,7 @@ typingmind-excel-engine/
 ├── test-widget.html                  ← DEV: simulador de TypingMind (widget real, sin IA)
 ├── test-duckdb-worker.html           ← DEV: banco de pruebas del Worker
 ├── tests/
+│   ├── fase8-guardrail-verificacion.html ← DEV: 97 checks (guardrail de solo lectura, contrato postMessage)
 │   ├── fase6-multisheet-verificacion.html ← DEV: 85 checks (selector de hojas, multi-hoja en la UI)
 │   ├── fase5-verificacion.html       ← DEV: 44 checks (UI móvil, FAB, arrastre, inyección)
 │   ├── fase3b-verificacion.html      ← DEV: 25 checks de regresión (Markdown, CSV, puente)
@@ -452,6 +453,9 @@ Los tests son **páginas HTML autocontenidas** que publican su resultado en `doc
 (prefijo `RES:`), de modo que se pueden ejecutar sin dependencias ni frameworks:
 
 ```bash
+# Guardrail de solo lectura del plugin + contrato postMessage → 97 checks
+node tests/run-headless.js tests/fase8-guardrail-verificacion.html
+
 # Selector de hojas multi-hoja en la UI (barra, cambio de hoja, SQL conservador) → 85 checks
 node tests/run-headless.js tests/fase6-multisheet-verificacion.html
 
@@ -474,8 +478,9 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
   geometría final del icono flotante (la declaración de la transición se verifica sobre el CSS).
 - Comprobación rápida de sintaxis: `node --check typingmind-excel-engine-v1.0.js`.
 
-Estado verificado de esta entrega: `85/85` checks de Fase 6 (selector de hojas multi-hoja en la UI),
-`44/44` de Fase 5 y `25/25` de regresión Fase 3B.
+Estado verificado de esta entrega: `97/97` checks de Fase 8 (guardrail de solo lectura y contrato
+postMessage), `85/85` de Fase 6 (selector de hojas multi-hoja en la UI), `44/44` de Fase 5 y `25/25`
+de regresión Fase 3B.
 
 ---
 
@@ -508,6 +513,7 @@ Estado verificado de esta entrega: `85/85` checks de Fase 6 (selector de hojas m
 | Fase 6 | **Documentación y empaquetado**: README, guía de instalación y carpeta `plugin/` definitiva |
 | Multi-hoja | Iteración de `workbook.SheetNames`: **una tabla por pestaña** (`excel_data_<hoja saneada>`) con omisión/reporte tolerante de hojas vacías (`v1.0-phase-1b+multisheet`) |
 | Fase 6 · UI | **Selector de hojas en el widget**: desplegable nativo para alternar entre las tablas `excel_data_<hoja>` sin recargar el archivo, sustitución conservadora del SQL editado y metadato de columnas de la hoja activa (`tests/fase6-multisheet-verificacion.html`, 85 checks) |
+| Fase 8 · Guardrail | **Blindaje contra falsos positivos/negativos** del guardrail de solo lectura (saneado de literales + lista blanca + lista negra ampliada): **0 FP / 0 FN** sobre el banco de 67 consultas y suite headless de **97 checks** (`tests/fase8-guardrail-verificacion.html`) |
 
 ---
 

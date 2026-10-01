@@ -1,7 +1,7 @@
 # Active Context — TypingMind Excel Engine
 
 > Foco de trabajo actual, cambios recientes, siguientes pasos y decisiones activas.
-> Última actualización: **2026‑09‑30** (Fase 8 · guardrail blindado del plugin, commit `be03349`; 0 FP / 0 FN sobre el banco de 67 consultas).
+> Última actualización: **2026‑10‑01** (suite headless de Fase 8 en `tests/fase8-guardrail-verificacion.html`, 97 checks sobre el banco de 67 consultas; commit del producto `be03349`).
 
 ## Foco actual
 
@@ -13,8 +13,9 @@ consultas**: **0 falsos positivos** (antes 14: literales como `WHERE estado = 'D
 como `SELECT "Update"`) y **0 falsos negativos** (antes 16: `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`,
 `VACUUM`, `CHECKPOINT`, `PRAGMA force_checkpoint`, `MERGE`, `USE`, `BEGIN`, sentencias apiladas y dos modos
 de ocultar el verbo tras un comentario o un literal). El contrato del plugin (canal, timeout de 30 s,
-Markdown ≤ 50 filas y mensajes) queda intacto (22/22 comprobaciones) y las tres suites headless siguen en
-verde. Commit del producto: **`be03349`**.
+Markdown ≤ 50 filas y mensajes) queda intacto (22/22 comprobaciones) y las cuatro suites headless siguen en
+verde. La suite headless del guardrail, `tests/fase8-guardrail-verificacion.html`, queda en **97/97**
+checks (4 suites activas: 97 + 85 + 44 + 25). Commit del producto: **`be03349`**.
 
 **Fase 7 completada: estabilidad de dependencias y consistencia documental.** SheetJS queda **fijado a
 `0.18.5`** en el Worker (constante `SHEETJS_PACKAGE`; era la única dependencia sin pin), el guardrail
@@ -41,6 +42,7 @@ Plugin IA y UI).
 | Comprobación | Comando | Resultado |
 |---|---|---|
 | Sintaxis (3 archivos) | `node --check duckdb-worker.js` · `plugin/implementation.js` · `typingmind-excel-engine-v1.0.js` | OK (exit 0 ×3) |
+| Suite Fase 8 | `node tests/run-headless.js tests/fase8-guardrail-verificacion.html` | **97/97 OK** (exit 0) |
 | Suite Fase 6 | `node tests/run-headless.js tests/fase6-multisheet-verificacion.html` | **85/85 OK** (exit 0) |
 | Suite Fase 5 | `node tests/run-headless.js tests/fase5-verificacion.html` | **44/44 OK** (exit 0) |
 | Suite Fase 3B | `node tests/run-headless.js tests/fase3b-verificacion.html` | **25/25 OK** (exit 0) |
@@ -61,7 +63,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 1. **El Memory Bank vive en `memory-bank/` en la raíz del repo** (6 archivos núcleo + 2 de contexto:
    `plugin-bridge-protocol.md` y `testing-strategy.md`).
 2. **Regla de oro heredada del README (§ Contribuir):** no tocar `typingmind-excel-engine-v1.0.js` ni
-   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **tres**: Fase 6, Fase 5
+   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **cuatro**: Fase 8, Fase 6, Fase 5
    y Fase 3B); y mantener sincronizados `README.md` (producto) y `plugin/README.md` (integración IA).
 3. **La retrocompatibilidad del nombre `excel_data` es intocable**: el plugin, las suites SQL y la
    documentación dependen de que la hoja 0 conserve el nombre base.
@@ -93,9 +95,10 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
    en el README, así que pasó de ser una deriva documental a una decisión de producto.
 4. **Título de `tests/sql-test-runner.html`:** sigue anunciando "v0.4.20" con el producto en v1.0 (la
    única deriva documental que queda, ver `progress.md`).
-5. **Suite headless del guardrail:** portar el banco de 67 consultas a
+5. ~~**Suite headless del guardrail:** portar el banco de 67 consultas a
    `tests/fase8-guardrail-verificacion.html` (convención `RES:`) para que la cobertura del plugin entre en
-   la batería automática (ver `testing-strategy.md` § Pendiente recomendado).
+   la batería automática.~~ **Completado:** la suite existe y queda en **97/97** checks; el plugin ya forma
+   parte de la batería automática (ver `testing-strategy.md`).
 
 ## Patrones y aprendizajes de esta sesión
 

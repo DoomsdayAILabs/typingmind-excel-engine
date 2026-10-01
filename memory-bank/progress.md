@@ -1,22 +1,22 @@
 # Progress — TypingMind Excel Engine
 
 > Qué funciona, qué falta, estado actual e issues conocidos.
-> Estado evaluado el **2026‑09‑30**; commits del producto **`d876db4`** (Fase 6 · UI desplegada) y
-> **`be03349`** (Fase 8 · guardrail robusto del plugin: saneado + lista blanca + lista negra ampliada) más el
-> commit de documentación que sincroniza este Memory Bank.
+> Estado evaluado el **2026‑10‑01**; commits del producto **`d876db4`** (Fase 6 · UI desplegada),
+> **`be03349`** (Fase 8 · guardrail robusto del plugin: saneado + lista blanca + lista negra ampliada) y
+> **`3e0b3f7`** (suite headless del guardrail, 97 checks) más el commit de documentación que sincroniza este Memory Bank.
 
 ## Estado actual
 
 **El soporte multi-hoja está 100 % cerrado en las tres piezas (Worker, Plugin IA y UI Widget) y las
 dependencias externas quedan fijadas.** SheetJS pasa de etiqueta flotante a **`0.18.5`** (`686a46e`),
 así que DuckDB‑WASM `1.29.0` y SheetJS `0.18.5` son las dos únicas versiones que carga el Worker. Las
-tres suites headless están en verde (**85/85**, 44/44 y 25/25) y GitHub Pages sirve la build de Fase 6
+cuatro suites headless están en verde (**97/97**, 85/85, 44/44 y 25/25) y GitHub Pages sirve la build de Fase 6
 (cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**527 líneas**) ya no describe
 archivos inexistentes, declara la licencia MIT oficial y sus listas de sentencias permitidas y de
 descubrimiento de esquema coinciden con el plugin real. El repositorio está **limpio y sincronizado**
 con `origin/main`. **Fase 8 (`be03349`):** el guardrail del plugin pasa de lista negra textual a cuatro
 comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo de apiladas), con
-**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas.
+**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas, ya empaquetado en la suite headless `tests/fase8-guardrail-verificacion.html` (**97/97**).
 
 ## Qué funciona (verificado)
 
@@ -73,6 +73,7 @@ comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo 
 
 | Suite | Checks | Resultado |
 |---|---|---|
+| `tests/fase8-guardrail-verificacion.html` | 97 | **OK 97 / FAIL 0** |
 | `tests/fase6-multisheet-verificacion.html` | 85 | **OK 85 / FAIL 0** |
 | `tests/fase5-verificacion.html` | 44 | **OK 44 / FAIL 0** |
 | `tests/fase3b-verificacion.html` | 25 | **OK 25 / FAIL 0** |
@@ -172,6 +173,8 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 | Memory Bank sincronizado con Fase 7 (dependencias fijadas y referencias de README) | commit de docs posterior a `686a46e` |
 | **Fase 8 · plugin**: guardrail robusto (saneado + lista blanca + lista negra ampliada + apiladas) | `be03349` |
 | Memory Bank sincronizado con Fase 8 (guardrail, spec y docs) | commit de docs posterior a `be03349` |
+| **Suite headless del guardrail** (`tests/fase8-guardrail-verificacion.html`, 97 checks) | `3e0b3f7` |
+| README y memory-bank sincronizados con la suite de Fase 8 (97 checks) | commit de docs posterior a `3e0b3f7` |
 
 ## Por confirmar
 

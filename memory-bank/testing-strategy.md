@@ -1,7 +1,7 @@
 # Testing Strategy — TypingMind Excel Engine
 
 > Cómo se prueba el proyecto, qué cubre cada suite y qué no es automatizable hoy.
-> Resultados ejecutados y verificados el **2026‑09‑30** sobre el producto con Fase 6 · UI (`d876db4`).
+> Resultados ejecutados y verificados el **2026‑10‑01** sobre el producto con Fase 8 · guardrail (`be03349`) y su suite headless de Fase 8 (`tests/fase8-guardrail-verificacion.html`, 97/97 checks).
 
 ## Principios
 
@@ -19,6 +19,9 @@
 ## Cómo ejecutarlas
 
 ```powershell
+# Fase 8 — guardrail de solo lectura y contrato postMessage (97 checks)
+node tests/run-headless.js tests/fase8-guardrail-verificacion.html
+
 # Fase 6 — selector de hojas multi-hoja en la UI (85 checks)
 node tests/run-headless.js tests/fase6-multisheet-verificacion.html
 
@@ -44,7 +47,7 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 | `tests/fase6-multisheet-verificacion.html` | automática headless | **85 checks**: barra oculta con CSV/Parquet/Excel de 1 hoja; libro de 5 pestañas → 5 opciones (3 habilitadas, 2 deshabilitadas) con etiquetas (`42 filas`, `omitida (vacía)`, `omitida (sin datos)`, `solo cabeceras`); resumen `Hojas 3/5 · 2 vacías` en ámbar + tooltip por hoja; orden DOM metadatos → barra → consola; selección inicial = tabla primaria (≠ hoja 0); cambio de hoja con metadatos y **una sola** consulta nueva (sin recargar el archivo); preservación de la consulta editada y de la tabla entrecomillada; selecciones vacías/ajenas al libro ignoradas; reset por archivo nuevo y por carga fallida; FAB 50×50 y arrastre de cabecera intactos; reglas CSS de Fase 6 y de Fase 5 | **85/85 OK** |
 | `tests/fase5-verificacion.html` | automática headless | 44 checks: widget inyectado, modo icono 50×50, geometry/clamping, arrastre ratón y táctil, umbral clic vs. arrastre, supresión del ratón sintético, auto‑minimizado al enviar, reglas CSS exigidas | **44/44 OK** |
 | `tests/fase3b-verificacion.html` | automática headless | 25 checks: botón "💬 Enviar a TM", escapado Markdown (pipe, salto de línea → `<br>`, `null`), límite de 50 filas + aviso de omitidas, evento `input` para React, suma al texto existente, alertas, fallback a portapapeles, exportación CSV, ausencia del botón ➖ | **25/25 OK** |
-| `tests/fase8-guardrail` (banco de 67 consultas) | **arnés `vm` sobre `plugin/implementation.js`** (aún no vive en `tests/`) | **67 casos** del guardrail: los 14 falsos positivos históricos (literales e identificadores entrecomillados con palabras reservadas) y los 16 falsos negativos históricos (`TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`, `PRAGMA force_checkpoint`, `MERGE`, `USE`, `BEGIN`, sentencias apiladas, verbo oculto tras comentario o tras literal con `$$...$$`), más 22 comprobaciones de contrato del plugin (nombre/spec, mensajes, canal `tm-excel-engine`, timeout de 30 s, Markdown, `\|` escapado, `null` → celda vacía, 0 filas, 50 de 60 filas) | **67/67 OK · 0 FP / 0 FN · contrato 22/22** |
+| `tests/fase8-guardrail-verificacion.html` | automática headless | **97 checks**: banco de **67 consultas** del guardrail: los 14 falsos positivos históricos (literales e identificadores entrecomillados con palabras reservadas) y los 16 falsos negativos históricos (`TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`, `PRAGMA force_checkpoint`, `MERGE`, `USE`, `BEGIN`, sentencias apiladas, verbo oculto tras comentario o tras literal con `$$...$$`), más 22 comprobaciones de contrato del plugin (nombre/spec, mensajes, canal `tm-excel-engine`, timeout de 30 s, Markdown, `\|` escapado, `null` → celda vacía, 0 filas, 50 de 60 filas) | **97/97 OK** |
 | `tests/fase3b-visual.html` | manual/visual | capturas de los estados `#min`, `#drag`, `#send` (usa `File` en memoria con `ventas.csv`, sin red) | por confirmar visualmente |
 | `tests/sql-test-runner.html` | **manual** | **38 casos** en dos baterías: `TESTS_TEUS` (línea 291, **20 casos** sobre `TEUs.xlsx`, 18 filas de datos: COUNT, GROUP BY + SUM, WHERE, SUM FILTER, COUNT DISTINCT, STRING_AGG, concatenación, EXTRACT YEAR/MONTH, AVG/SUM/COUNT, porcentaje con NULLIF, ROW_NUMBER, suma acumulada, LAG/LEAD, CTEs + JOIN, subconsulta AVG, CASE, HAVING + JOIN, BETWEEN/IN/COALESCE) y `buildRequerimientoTests(totalRows)` (línea 534, **18 casos** sobre `RequerimientoPrueba`: Fecha, Area, Categoria, Empleado, Turno, Equipo; hasta 60 000 filas, 1‑2 min de carga) | **no ejecutable sin intervención humana** (ver abajo) |
 | `test-widget.html` | manual | simulador de TypingMind (102 líneas) que carga el motor real; sirve para probar carga de archivos y widget con un servidor local | uso manual |
@@ -53,6 +56,7 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 ## Estado verificado hoy (evidencia literal)
 
 ```text
+== tests/fase8-guardrail-verificacion.html (900,760) => checks: 97 | OK: 97 | FAIL: 0  (exit 0)
 == tests/fase6-multisheet-verificacion.html (900,760) => checks: 85 | OK: 85 | FAIL: 0   (exit 0)
 == tests/fase5-verificacion.html (900,760) => checks: 44 | OK: 44 | FAIL: 0             (exit 0)
 == tests/fase3b-verificacion.html (900,760) => checks: 25 | OK: 25 | FAIL: 0            (exit 0)
@@ -82,17 +86,18 @@ JSON.parse(plugin/plugin.json)                 → JSON válido
    que usar `python -m http.server 8080` o `npx serve .`.
 4. **Las transiciones CSS no avanzan en headless**: la suite de Fase 5 las desactiva para medir la
    geometría final del icono flotante y verifica la declaración `transition` sobre el texto del CSS.
-5. **Cobertura del plugin (Fase 8):** el guardrail se valida con un **banco de 67 consultas** cargando
-   `plugin/implementation.js` real en un contexto `vm` con `window`/`setTimeout` instrumentados (0 FP /
-   0 FN) más 22 comprobaciones de contrato. El arnés **no vive todavía en `tests/`** (ver § Pendiente
-   recomendado); la suite de Fase 3B solo ejercita el puente desde el lado del motor.
+5. **Cobertura del plugin (Fase 8):** el guardrail se valida ahora con la suite headless
+   `tests/fase8-guardrail-verificacion.html` (**97/97 OK**), que carga `plugin/implementation.js` real en un
+   contexto `vm` con `window`/`setTimeout` instrumentados: **banco de 67 consultas** del guardrail (0 FP /
+   0 FN) más **22 comprobaciones de contrato** del plugin. Ya **no queda hueco de cobertura en `tests/`**
+   para el plugin; la suite de Fase 3B sigue ejercitando el puente desde el lado del motor.
 6. **El I/O real de archivos no se prueba en headless:** la suite de Fase 6 stubea `FileReader` para ser
    determinista bajo `--virtual-time-budget`. La lectura real de CSV/XLSX se valida con las páginas
    manuales (`test-widget.html`, `test-duckdb-worker.html`) contra un servidor local.
 
 ## Protocolo al cambiar código (regla del repo)
 
-1. Ejecutar **las tres** suites headless (Fase 6, Fase 5 y Fase 3B) y dejarlas en verde antes de dar
+1. Ejecutar **las cuatro** suites headless (Fase 8, Fase 6, Fase 5 y Fase 3B) y dejarlas en verde antes de dar
    por bueno un cambio en `typingmind-excel-engine-v1.0.js` o `duckdb-worker.js`.
 2. Ampliar los checks de `tests/` cuando se cambie el comportamiento del widget o del plugin.
 3. Mantener sincronizados `README.md` (producto) y `plugin/README.md` (integración IA).
@@ -101,6 +106,6 @@ JSON.parse(plugin/plugin.json)                 → JSON válido
 
 - Incorporar fixtures mínimos (o generar un CSV/XLSX en memoria) para poder ejecutar la batería SQL
   en headless de forma desatendida y cerrar el único hueco grande de cobertura.
-- **Convertir el banco del guardrail en suite headless** (`tests/fase8-guardrail-verificacion.html`,
-  convención `RES:`): hoy el arnés vive fuera de `tests/`, así que la cobertura del plugin, aunque medida
-  (67/67 · 0 FP / 0 FN · contrato 22/22), no forma parte de la batería automática.
+- ~~**Convertir el banco del guardrail en suite headless**~~ **Completado:** el banco de 67 consultas y las 22
+  comprobaciones de contrato viven desde ahora en `tests/fase8-guardrail-verificacion.html` (**97/97 OK**,
+  convención `RES:`), así que la cobertura del plugin forma parte de la batería automática.
