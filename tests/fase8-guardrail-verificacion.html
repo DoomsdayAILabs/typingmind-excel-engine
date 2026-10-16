@@ -274,9 +274,8 @@
       const cTimeout = await conversar("SELECT 1", null);
       cTimeout.timer.fn();
       check("Contrato: timeout de 30 s con el mensaje exacto", (await cTimeout.promesa) === MSG_TIMEOUT);
-      if (window.__listeners.length !== 0) {
-        resultados.logs.push("observacion: tras el timeout de 30 s el listener no se retira (el plugin solo lo retira al emparejar la respuesta)");
-      }
+      // Fase 9: el timeout retira el listener (antes solo se retiraba al emparejar la respuesta).
+      check("Contrato: el timeout retira el listener", window.__listeners.length === 0, "listeners=" + window.__listeners.length);
 
       const cAliasSql = await conversar(null, { success: true, data: [] }, { sql: "SELECT * FROM excel_data" });
       check("Contrato: alias params.sql aceptado", cAliasSql.sobre.sql === "SELECT * FROM excel_data" && (await cAliasSql.promesa) === MSG_VACIO);

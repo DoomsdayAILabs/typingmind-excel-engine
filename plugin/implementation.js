@@ -105,6 +105,9 @@ async function query_excel_data(params) {
       // --- Puente postMessage con el motor local (canal "tm-excel-engine") ---
       const reqId = "req_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
       const timer = setTimeout(() => {
+        // El timeout también retira el listener: sin esta línea el `onMessage` del iframe
+        // quedaría registrado indefinidamente tras cada consulta que no obtiene respuesta.
+        window.removeEventListener("message", onMessage);
         resolve("Error: Timeout. El motor local no respondió. Verifica que la extensión esté cargada y un archivo Excel esté procesado.");
       }, 30000);
 
@@ -141,7 +144,16 @@ async function query_excel_data(params) {
       }
 
       window.addEventListener("message", onMessage);
-      window.parent.postMessage({ channel: "tm-excel-engine", action: "execute_sql", sql: sql, requestId: reqId }, "*");
+
+      // Si el envío al motor falla (p. ej. un sandbox que restringe postMessage), se retira el
+      // listener y se cancela el temporizador antes de resolver para no dejar recursos vivos.
+      try {
+        window.parent.postMessage({ channel: "tm-excel-engine", action: "execute_sql", sql: sql, requestId: reqId }, "*");
+      } catch (postError) {
+        window.removeEventListener("message", onMessage);
+        clearTimeout(timer);
+        return resolve("Error crítico en la ejecución del plugin: " + (postError.message || String(postError)));
+      }
     } catch (e) {
       resolve("Error crítico en la ejecución del plugin: " + (e.message || String(e)));
     }

@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Verificación Fase 9 (ciclo de vida de tablas y listeners)</title>
+  <style>
+    body { background: #111318; color: #f3f4f6; font-family: sans-serif; }
+    #verify-results { font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Verificación Fase 9 — ciclo de vida de las tablas gestionadas (Worker) y de los listeners (plugin)</h1>
+
+  <div id="verify-results"></div>
+
+  <!-- Ejecutar: node tests/run-headless.js tests/fase9-ciclo-vida-verificacion.html
+       (el resultado se publica en document.title como JSON codificado) -->
+
+  <!-- ===== Bloque B: entorno del plugin (iframe sandbox de TypingMind) ===== -->
+  <script>
+    window.__posted = [];                    // sobres enviados al motor
+    window.__listeners = [];                 // listeners "message" vivos
+    window.__timers = [];                    // temporizadores programados por el plugin
+    window.__setTimeoutReal = window.setTimeout.bind(window);
+
+    window.postMessage = function (msg) { window.__posted.push(msg); };
+    window.addEventListener = function (tipo, fn) {
+      if (tipo === "message") window.__listeners.push(fn);
+    };
+    window.removeEventListener = function (tipo, fn) {
+      if (tipo !== "message") return;
+      const i = window.__listeners.indexOf(fn);
+      if (i >= 0) window.__listeners.splice(i, 1);
+    };
+    window.setTimeout = function (fn, ms) {
+      const id = window.__timers.length + 1;
+      window.__timers.push({ id: id, fn: fn, ms: ms, cancelado: false });
+      return id;
+    };
+    window.clearTimeout = function (id) {
+      for (const t of window.__timers) if (t.id === id) t.cancelado = true;
+    };
+  </script>
+  <script src="../plugin/implementation.js"></script>
+
+  <!-- ===== Bloque A: el Worker real cargado como script global =====
+       `importScripts` (SheetJS por CDN) se anula y `XLSX` se sustituye por un doble
+       controlado. El Worker registra `self.onmessage`, pero la suite llama a sus funciones
+       directamente: nunca le envía mensajes. -->
+  <script>
+    window.importScripts = function () {};
+  </script>
+  <script src="../duckdb-worker.js"></script>
+
+  <script>
+    // --- Utilidades del arnés (mismas convenciones que las suites de Fase 3B/5/6/8) ---
+    const resultados = { checks: [], logs: [] };
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+
+    const MSG_TIMEOUT = "Error: Timeout. El motor local no respondió. Verifica que la extensión esté cargada y un archivo Excel esté procesado.";
+
+    // --- Doble de DuckDB: catálogo en memoria + registro de todo el SQL emitido ---
+    const catalogo = new Map();          // clave: nombre en minúsculas -> valor: nombre exacto
+    const sqlEmitido = [];               // SQL recibido por conn.query
+    const dropsConGrafiaInexacta = [];   // DROP cuyo nombre no coincide con la grafía creada
+    let fallarSiguienteDrop = false;     // inyecta un fallo en el próximo DROP
+    let libroPendiente = null;           // lo que devolverá XLSX.read en la próxima carga
+
+    const listar = () => Array.from(catalogo.values()).sort().join(" | ");
+    const iguales = (esperado) => listar() === esperado.slice().sort().join(" | ");
+    const existe = (nombre) => catalogo.has(String(nombre).toLowerCase());
+    const drops = () => sqlEmitido.filter((s) => /^\s*DROP TABLE IF EXISTS/i.test(s));
+    const ocurrencias = (texto) => sqlEmitido.filter((s) => s.indexOf(texto) !== -1).length;
+    const dropsDesde = (marca) => sqlEmitido.slice(marca).filter((s) => /^\s*DROP TABLE IF EXISTS/i.test(s));
+    const ocurrenciasDesde = (marca, texto) => sqlEmitido.slice(marca).filter((s) => s.indexOf(texto) !== -1).length;
+
+    const fakeConn = {
+      query: async (sql) => {
+        const texto = String(sql);
+        sqlEmitido.push(texto);
+
+        const mDrop = texto.match(/^\s*DROP TABLE IF EXISTS\s+"([^"]+)"/i);
+        if (mDrop) {
+          const nombre = mDrop[1];
+          if (fallarSiguienteDrop) {
+            fallarSiguienteDrop = false;
+            throw new Error("DROP simulado fallido");
+          }
+          const clave = nombre.toLowerCase();
+          // `DROP TABLE IF EXISTS` no falla si la tabla no existe, pero aquí se registra
+          // cualquier DROP que no use la grafía exacta con la que se creó la tabla.
+          if (catalogo.has(clave) && catalogo.get(clave) !== nombre) {
+            dropsConGrafiaInexacta.push(nombre + " != " + catalogo.get(clave));
+          }
+          catalogo.delete(clave);
+          return { toArray: () => [] };
+        }
+
+        const mCreate = texto.match(/^\s*CREATE OR REPLACE TABLE\s+"([^"]+)"/i);
+        if (mCreate) {
+          catalogo.set(mCreate[1].toLowerCase(), mCreate[1]);
+          return { toArray: () => [] };
+        }
+
+        if (/information_schema\.columns/i.test(texto)) {
+          return { toArray: () => [{ column_name: "id", data_type: "INTEGER" }] };
+        }
+
+        const mCount = texto.match(/^\s*SELECT COUNT\(\*\) AS registros FROM\s+"([^"]+)"/i);
+        if (mCount) {
+          const nombre = mCount[1];
+          if (!catalogo.has(nombre.toLowerCase())) {
+            throw new Error("Catalog Error: Table with name " + nombre + " does not exist!");
+          }
+          return { toArray: () => [{ registros: 42 }] };
+        }
+
+        // DDL del usuario desde la consola SQL del widget: nunca pasa por `tablasGestionadas`.
+        const mUsuario = texto.match(/^\s*CREATE TABLE\s+([A-Za-z0-9_]+)/i);
+        if (mUsuario) {
+          catalogo.set(mUsuario[1].toLowerCase(), mUsuario[1]);
+          return { toArray: () => [] };
+        }
+
+        const mPreview = texto.match(/^\s*SELECT \* FROM\s+"([^"]+)"/i);
+        if (mPreview) {
+          const nombre = mPreview[1];
+          if (!catalogo.has(nombre.toLowerCase())) {
+            throw new Error("Catalog Error: Table with name " + nombre + " does not exist!");
+          }
+          return { toArray: () => [{ id: 1 }] };
+        }
+
+        return { toArray: () => [] };
+      }
+    };
+
+    const fakeDb = {
+      registerFileText: async () => {},
+      registerFileBuffer: async () => {},
+      dropFile: async () => {}
+    };
+
+    // --- Doble de SheetJS: libros sintéticos con un CSV por hoja ---
+    function crearLibro(hojas) {
+      const SheetNames = hojas.map((h) => h.nombre);
+      const Sheets = {};
+      for (const h of hojas) {
+        Sheets[h.nombre] = h.vacia ? {} : { "!ref": "A1:B2", __csv: h.csv };
+      }
+      return { SheetNames: SheetNames, Sheets: Sheets };
+    }
+
+    window.XLSX = {
+      read: function () { return libroPendiente; },
+      utils: { sheet_to_csv: function (worksheet) { return worksheet.__csv; } }
+    };
+
+    function limpiarEntornoPlugin() {
+      window.__posted.length = 0;
+      window.__listeners.length = 0;
+      window.__timers.length = 0;
+    }
+
+    (async function run() {
+      try {
+        // ================= BLOQUE A — Worker: ciclo de vida de las tablas gestionadas =================
+        check("El Worker se cargó como script global y expone loadCSV", typeof loadCSV === "function");
+        check("El Worker publica la versión de Fase 9", WORKER_VERSION === "v1.0-phase-9+tables-lifecycle", WORKER_VERSION);
+
+        db = fakeDb;
+        conn = fakeConn;
+
+        // --- A1. Primera carga (CSV): no hay nada que limpiar ---
+        const rCsv = await loadCSV("a,b\n1,2", "excel_data", "t01");
+        check("A1 · CSV: la carga devuelve la tabla base",
+          rCsv.tabla === "excel_data" && rCsv.formato === "CSV" && rCsv.registros === 42);
+        check("A1 · CSV: el catálogo queda con una sola tabla", iguales(["excel_data"]), listar());
+        check("A1 · CSV: la primera carga no emite ningún DROP", drops().length === 0, drops().length);
+        check("A1 · CSV: la tabla queda registrada como gestionada",
+          tablasGestionadas.size === 1 && tablasGestionadas.get("excel_data") === "excel_data");
+
+        // --- A2. Excel A de 3 hojas (el «libro grande») ---
+        libroPendiente = crearLibro([
+          { nombre: "Datos", csv: "id,nombre\n1,a" },
+          { nombre: "Resumen", csv: "k,v\nx,1" },
+          { nombre: "Ventas 2024", csv: "id,importe\n1,150" }
+        ]);
+        const rA = await loadExcel(new Uint8Array([1]), "excel_data", "t02");
+        check("A2 · Excel A: 3 hojas cargadas y 3 tablas en el catálogo",
+          rA.hojas_cargadas === 3 && iguales(["excel_data", "excel_data_Resumen", "excel_data_Ventas_2024"]), listar());
+        check("A2 · Excel A: nombres saneados (hoja 0 → base, resto → base_sufijo)",
+          rA.hojas.map((h) => h.tabla).join("|") === "excel_data|excel_data_Resumen|excel_data_Ventas_2024",
+          rA.hojas.map((h) => h.tabla).join("|"));
+        check("A2 · Excel A: sin DROPs (las tablas previas se reemplazan, no se limpian)", drops().length === 0, drops().length);
+
+        // --- A3. Excel B con menos hojas: la huérfana desaparece ---
+        libroPendiente = crearLibro([
+          { nombre: "Datos", csv: "id,nombre\n9,z" },
+          { nombre: "Ventas 2024", csv: "id,importe\n2,200" }
+        ]);
+        const rB = await loadExcel(new Uint8Array([1]), "excel_data", "t03");
+        check("A3 · Excel B: el catálogo solo contiene las tablas del libro vigente",
+          iguales(["excel_data", "excel_data_Ventas_2024"]), listar());
+        check("A3 · Excel B: la huérfana se elimina exactamente una vez",
+          ocurrencias('DROP TABLE IF EXISTS "excel_data_Resumen"') === 1,
+          ocurrencias('DROP TABLE IF EXISTS "excel_data_Resumen"'));
+        check("A3 · Excel B: las tablas vigentes no se eliminan",
+          ocurrencias('DROP TABLE IF EXISTS "excel_data"') === 0 &&
+          ocurrencias('DROP TABLE IF EXISTS "excel_data_Ventas_2024"') === 0);
+        check("A3 · Excel B: el Map olvida la tabla eliminada y conserva las 2 vigentes",
+          !tablasGestionadas.has("excel_data_resumen") && tablasGestionadas.size === 2, tablasGestionadas.size);
+        check("A3 · Excel B: el resultado sigue describiendo el libro nuevo",
+          rB.tabla === "excel_data" && rB.hojas_totales === 2 && rB.hojas_omitidas === 0);
+
+        // --- A4. Excel con la hoja 0 vacía: la tabla fantasma se elimina ---
+        libroPendiente = crearLibro([
+          { nombre: "Portada", vacia: true },
+          { nombre: "Ventas", csv: "id,importe\n3,300" },
+          { nombre: "SinDatos", csv: "" }
+        ]);
+        const rC = await loadExcel(new Uint8Array([1]), "excel_data", "t04");
+        check("A4 · Hoja 0 vacía: la primaria es la primera hoja con datos", rC.tabla === "excel_data_Ventas", rC.tabla);
+        check("A4 · Hoja 0 vacía: desaparecen la tabla fantasma 'excel_data' y la huérfana anterior",
+          iguales(["excel_data_Ventas"]), listar());
+        check("A4 · Hoja 0 vacía: se emite el DROP de la tabla fantasma",
+          ocurrencias('DROP TABLE IF EXISTS "excel_data"') === 1, ocurrencias('DROP TABLE IF EXISTS "excel_data"'));
+        check("A4 · Hoja 0 vacía: los dos motivos de omisión se reportan",
+          rC.hojas[0].estado === "omitida" && rC.hojas[0].motivo === "hoja_vacia" &&
+          rC.hojas[2].estado === "omitida" && rC.hojas[2].motivo === "hoja_sin_datos");
+
+        // --- A5. CSV y Parquet después de un Excel multi-hoja ---
+        await loadCSV("x\n1", "excel_data", "t05");
+        check("A5 · CSV tras Excel: se limpian todas las tablas del libro anterior", iguales(["excel_data"]), listar());
+        libroPendiente = crearLibro([
+          { nombre: "Hoja1", csv: "a\n1" },
+          { nombre: "A", csv: "b\n1" },
+          { nombre: "B", csv: "c\n1" }
+        ]);
+        await loadExcel(new Uint8Array([1]), "excel_data", "t06");
+        const marcaParquet = sqlEmitido.length;
+        const rParquet = await loadParquet(new Uint8Array([1, 2, 3]), "excel_data", "t07");
+        check("A5 · Parquet tras Excel: solo queda la tabla base",
+          rParquet.formato === "PARQUET" && iguales(["excel_data"]), listar());
+        check("A5 · Parquet tras Excel: se eliminan las dos hojas sobrantes",
+          dropsDesde(marcaParquet).length === 2 &&
+          ocurrenciasDesde(marcaParquet, 'DROP TABLE IF EXISTS "excel_data_A"') === 1 &&
+          ocurrenciasDesde(marcaParquet, 'DROP TABLE IF EXISTS "excel_data_B"') === 1,
+          dropsDesde(marcaParquet).join(" ; "));
+
+        // --- A6. La tabla del usuario nunca se toca ---
+        await executeQuery("CREATE TABLE mia AS SELECT 1");
+        check("A6 · La tabla del usuario entra en el catálogo", existe("mia"));
+        libroPendiente = crearLibro([{ nombre: "Hoja1", csv: "a\n1" }]);
+        await loadExcel(new Uint8Array([1]), "excel_data", "t08");
+        check("A6 · La tabla del usuario sobrevive a las cargas", existe("mia") && iguales(["excel_data", "mia"]), listar());
+        check("A6 · Ningún DROP menciona la tabla del usuario", drops().every((s) => s.indexOf("mia") === -1));
+        check("A6 · La tabla del usuario no entra en tablasGestionadas",
+          !tablasGestionadas.has("mia") && tablasGestionadas.size === 1, tablasGestionadas.size);
+
+        // --- A7. Carga fallida: no destruye el dataset anterior ---
+        const catalogoAntes = listar();
+        const dropsAntes = drops().length;
+        let errorCsv = null;
+        try { await loadCSV("   ", "excel_data", "t09"); } catch (e) { errorCsv = e.message; }
+        check("A7 · CSV vacío: error de validación", errorCsv === "CSV inválido", errorCsv);
+        libroPendiente = crearLibro([{ nombre: "V1", vacia: true }, { nombre: "V2", vacia: true }]);
+        let errorExcel = null;
+        try { await loadExcel(new Uint8Array([1]), "excel_data", "t10"); } catch (e) { errorExcel = e.message; }
+        check("A7 · Excel sin datos: error explícito",
+          errorExcel === "El archivo Excel no contiene hojas con datos", errorExcel);
+        check("A7 · Carga fallida: el catálogo queda intacto", listar() === catalogoAntes, listar());
+        check("A7 · Carga fallida: no se emite ningún DROP", drops().length === dropsAntes);
+
+        // --- A8. Fallo de DROP: la carga no se rompe y la limpieza se reintenta ---
+        libroPendiente = crearLibro([
+          { nombre: "Datos", csv: "a\n1" },
+          { nombre: "Resumen", csv: "b\n1" },
+          { nombre: "Ventas", csv: "c\n1" }
+        ]);
+        await loadExcel(new Uint8Array([1]), "excel_data", "t11");
+        check("A8 · Preparación: 3 tablas gestionadas", tablasGestionadas.size === 3, listar());
+
+        fallarSiguienteDrop = true;
+        libroPendiente = crearLibro([{ nombre: "Datos", csv: "a\n2" }]);
+        const rFallo = await loadExcel(new Uint8Array([1]), "excel_data", "t12");
+        check("A8 · Fallo de DROP: la carga sigue siendo exitosa",
+          rFallo.hojas_cargadas === 1 && rFallo.tabla === "excel_data");
+        check("A8 · Fallo de DROP: la tabla cuyo DROP falló permanece", existe("excel_data_Resumen"));
+        check("A8 · Fallo de DROP: las demás obsoletas sí se limpian", !existe("excel_data_Ventas"));
+        check("A8 · Fallo de DROP: la entrada fallida permanece en el Map para reintentarla",
+          tablasGestionadas.has("excel_data_resumen") && !tablasGestionadas.has("excel_data_ventas"));
+
+        libroPendiente = crearLibro([{ nombre: "Datos", csv: "a\n3" }]);
+        await loadExcel(new Uint8Array([1]), "excel_data", "t13");
+        check("A8 · Reintento: la limpieza pendiente se completa", iguales(["excel_data", "mia"]), listar());
+        check("A8 · Reintento: el Map queda coherente con el catálogo",
+          tablasGestionadas.size === 1 && tablasGestionadas.has("excel_data"), tablasGestionadas.size);
+
+        // --- A9. Colisión de nombres saneados (_2) ---
+        libroPendiente = crearLibro([
+          { nombre: "Datos", csv: "a\n1" },
+          { nombre: "Ventas 2024", csv: "b\n1" },
+          { nombre: "Ventas-2024", csv: "c\n1" }
+        ]);
+        const rCol = await loadExcel(new Uint8Array([1]), "excel_data", "t14");
+        check("A9 · Colisión: la segunda pestaña equivalente recibe el sufijo _2",
+          rCol.hojas.map((h) => h.tabla).join("|") === "excel_data|excel_data_Ventas_2024|excel_data_Ventas_2024_2",
+          rCol.hojas.map((h) => h.tabla).join("|"));
+        const marcaColision = sqlEmitido.length;
+        libroPendiente = crearLibro([{ nombre: "Datos", csv: "a\n1" }]);
+        await loadExcel(new Uint8Array([1]), "excel_data", "t15");
+        check("A9 · Colisión: las dos tablas colisionadas se limpian sin tocar la base ni la del usuario",
+          iguales(["excel_data", "mia"]) &&
+          ocurrenciasDesde(marcaColision, 'DROP TABLE IF EXISTS "excel_data_Ventas_2024"') === 1 &&
+          ocurrenciasDesde(marcaColision, 'DROP TABLE IF EXISTS "excel_data_Ventas_2024_2"') === 1,
+          dropsDesde(marcaColision).join(" ; "));
+
+        // --- A10. Forma e integridad del SQL de limpieza ---
+        check("A10 · Todos los DROP usan IF EXISTS (nunca un DROP a ciegas)",
+          drops().length > 0 && drops().every((s) => /^\s*DROP TABLE IF EXISTS "/.test(s)), drops().length);
+        check("A10 · Cada DROP conserva la grafía exacta con la que se creó la tabla",
+          dropsConGrafiaInexacta.length === 0, dropsConGrafiaInexacta.join(", "));
+        check("A10 · El Map solo contiene las tablas gestionadas vigentes",
+          iguales(["excel_data", "mia"]) && tablasGestionadas.size === 1, tablasGestionadas.size);
+
+        // ================= BLOQUE B — Plugin: ciclo de vida de los listeners =================
+        limpiarEntornoPlugin();
+        const pTimeout = query_excel_data({ sql_query: "SELECT 1" });
+        const sobreTimeout = window.__posted[0];
+        const timerTimeout = window.__timers[0];
+        const listenerTimeout = window.__listeners[0];
+        check("B1 · Una consulta válida deja un listener y un temporizador de 30 s",
+          window.__listeners.length === 1 && window.__timers.length === 1 && !!timerTimeout && timerTimeout.ms === 30000,
+          "listeners=" + window.__listeners.length + " ms=" + (timerTimeout ? timerTimeout.ms : "sin timer"));
+        check("B1 · El sobre sale por el canal y con la acción esperados",
+          !!sobreTimeout && sobreTimeout.channel === "tm-excel-engine" && sobreTimeout.action === "execute_sql");
+
+        timerTimeout.fn();
+        const mensajeTimeout = await pTimeout;
+        check("B1 · El timeout resuelve con el mensaje exacto", mensajeTimeout === MSG_TIMEOUT, mensajeTimeout);
+        check("B1 · El timeout retira el listener", window.__listeners.length === 0, "listeners=" + window.__listeners.length);
+
+        listenerTimeout({ data: { channel: "tm-excel-engine", requestId: sobreTimeout.requestId, success: true, data: [{ a: 1 }] } });
+        check("B1 · Una respuesta tardía no cambia el resultado ni reactiva listeners",
+          (await pTimeout) === MSG_TIMEOUT && window.__listeners.length === 0);
+
+        // --- B2: si postMessage lanza, se retira el listener y se cancela el temporizador ---
+        limpiarEntornoPlugin();
+        const postOriginal = window.postMessage;
+        window.postMessage = function () { throw new Error("postMessage bloqueado"); };
+        const pRoto = query_excel_data({ sql_query: "SELECT 1" });
+        const timerRoto = window.__timers[0];
+        const mensajeRoto = await pRoto;
+        window.postMessage = postOriginal;
+        check("B2 · El fallo de postMessage se reporta como error crítico",
+          mensajeRoto === "Error crítico en la ejecución del plugin: postMessage bloqueado", mensajeRoto);
+        check("B2 · El listener se retira al fallar el envío", window.__listeners.length === 0, "listeners=" + window.__listeners.length);
+        check("B2 · El temporizador se cancela al fallar el envío", !!timerRoto && timerRoto.cancelado === true);
+        check("B2 · Tras el fallo, el guardrail sigue rechazando escrituras sin dejar recursos vivos",
+          (await query_excel_data({ sql_query: "DROP TABLE excel_data" })) ===
+            "Error: Solo se permiten consultas de lectura (SELECT, WITH, EXPLAIN, SHOW, DESCRIBE)." &&
+          window.__listeners.length === 0 && window.__posted.length === 0);
+      } catch (e) {
+        check("La suite se ejecuta sin excepciones no controladas", false, e && e.message ? e.message : String(e));
+      }
+
+      resultados.logs.push("checks=" + resultados.checks.length);
+      resultados.logs.push("escenarios: ciclo de vida de las tablas gestionadas (Worker) + listeners del plugin (B1/B2)");
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados);
+      document.title = "RES:" + encodeURIComponent(JSON.stringify(resultados));
+    })();
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 ﻿"use strict";
 
-const WORKER_VERSION = "v1.0-phase-1b+multisheet";
+const WORKER_VERSION = "v1.0-phase-9+tables-lifecycle";
 const DUCKDB_PACKAGE = "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
 const SHEETJS_PACKAGE = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
 
@@ -10,6 +10,12 @@ let db = null;
 let conn = null;
 let runtimeWorker = null;
 let runtimeWorkerUrl = null;
+
+// Tablas creadas por el motor (nunca por el usuario): fuente de verdad para la limpieza
+// entre cargas. La clave es el nombre en minúsculas (DuckDB compara identificadores sin
+// distinguir mayúsculas) y el valor, el nombre exacto con el que se creó la tabla, para
+// poder emitir el DROP con su grafía original.
+const tablasGestionadas = new Map();
 
 async function initDuckDB() {
   if (db && conn) {
@@ -179,6 +185,40 @@ function quoteStringLiteral(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+// --- Ciclo de vida de las tablas gestionadas ---
+
+/**
+ * Registra una tabla creada por una carga para poder limpiarla en la siguiente. Se guarda
+ * el nombre exacto como valor del Map para emitir el DROP con la misma grafía con la que
+ * se creó; la clave en minúsculas evita duplicados porque DuckDB compara identificadores
+ * sin distinguir mayúsculas.
+ */
+function recordarTablaGestionada(tableName) {
+  const nombre = String(tableName);
+  tablasGestionadas.set(nombre.toLowerCase(), nombre);
+}
+
+/**
+ * Elimina las tablas que gestionó una carga anterior y que el libro vigente ya no
+ * materializa (p. ej. `excel_data_<hoja>` de un Excel con más pestañas, o `excel_data`
+ * cuando la hoja 0 del libro nuevo está vacía). Las tablas que el usuario crea a mano en
+ * la consola SQL nunca entran en `tablasGestionadas`, así que no se tocan.
+ * Best-effort: un fallo de limpieza jamás convierte una carga correcta en error; la
+ * entrada permanece en el Map y se reintenta en la carga siguiente.
+ */
+async function limpiarTablasObsoletas(tablasVigentes) {
+  for (const [clave, nombreOriginal] of Array.from(tablasGestionadas.entries())) {
+    if (tablasVigentes.has(clave)) continue;
+
+    try {
+      await conn.query(`DROP TABLE IF EXISTS ${quoteIdentifier(nombreOriginal)}`);
+      tablasGestionadas.delete(clave);
+    } catch (error) {
+      // Se reintentará en la próxima carga: la entrada sigue en el Map.
+    }
+  }
+}
+
 async function loadCSV(csvData, tableName, requestId) {
   if (!db || !conn) {
     throw new Error("DuckDB no está inicializado");
@@ -189,6 +229,7 @@ async function loadCSV(csvData, tableName, requestId) {
   }
 
   const virtualName = `upload_${requestId}.csv`;
+  const tablasCreadas = new Set();
   let fileRegistered = false;
   let mainError = null;
   let result;
@@ -204,6 +245,9 @@ async function loadCSV(csvData, tableName, requestId) {
       `CREATE OR REPLACE TABLE ${quotedTable} AS
        SELECT * FROM read_csv_auto(${quoteStringLiteral(virtualName)}, sample_size=-1, ignore_errors=true)`
     );
+
+    recordarTablaGestionada(sanitizedTable);
+    tablasCreadas.add(sanitizedTable.toLowerCase());
 
     const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
     const countRows = normalizeRows(countResult.toArray());
@@ -247,6 +291,8 @@ async function loadCSV(csvData, tableName, requestId) {
     throw mainError;
   }
 
+  await limpiarTablasObsoletas(tablasCreadas);
+
   return result;
 }
 async function loadParquet(parquetData, tableName, requestId) {
@@ -259,6 +305,7 @@ async function loadParquet(parquetData, tableName, requestId) {
   }
 
   const virtualName = `upload_${requestId}.parquet`;
+  const tablasCreadas = new Set();
   let fileRegistered = false;
   let mainError = null;
   let result;
@@ -274,6 +321,9 @@ async function loadParquet(parquetData, tableName, requestId) {
     await conn.query(
       `CREATE OR REPLACE TABLE ${quotedTable} AS SELECT * FROM read_parquet(${quoteStringLiteral(virtualName)})`
     );
+
+    recordarTablaGestionada(sanitizedTable);
+    tablasCreadas.add(sanitizedTable.toLowerCase());
 
     const countResult = await conn.query(`SELECT COUNT(*) AS registros FROM ${quotedTable}`);
     const countRows = normalizeRows(countResult.toArray());
@@ -316,6 +366,8 @@ async function loadParquet(parquetData, tableName, requestId) {
   if (mainError) {
     throw mainError;
   }
+
+  await limpiarTablasObsoletas(tablasCreadas);
 
   return result;
 }
@@ -450,6 +502,7 @@ async function loadExcel(excelBuffer, tableName, requestId) {
   }
 
   const ficherosVFS = [];
+  const tablasCreadas = new Set();
   let mainError = null;
   let result;
 
@@ -502,6 +555,11 @@ async function loadExcel(excelBuffer, tableName, requestId) {
       }
 
       hojas.push(entradaHoja(nombreHoja, carga));
+
+      if (carga.estado === "ok") {
+        recordarTablaGestionada(tablaDestino);
+        tablasCreadas.add(tablaDestino.toLowerCase());
+      }
     }
 
     const hojasOk = hojas.filter((hoja) => hoja.estado === "ok");
@@ -555,6 +613,8 @@ async function loadExcel(excelBuffer, tableName, requestId) {
   if (mainError) {
     throw mainError;
   }
+
+  await limpiarTablasObsoletas(tablasCreadas);
 
   return result;
 }
