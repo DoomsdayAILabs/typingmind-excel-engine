@@ -127,8 +127,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
    `f7e9510` (Fase 10):** datasets sintéticos deterministas + `?headless=1 --serve` (**39 checks**).
 3. **Decidir si se restaura `index.html`** como historial de versiones descargables: ya no se anuncia
    en el README, así que pasó de ser una deriva documental a una decisión de producto.
-4. **Título de `tests/sql-test-runner.html`:** sigue anunciando "v0.4.20" con el producto en v1.0 (la
-   única deriva documental que queda, ver `progress.md`).
+4. ~~**Título de `tests/sql-test-runner.html`:** seguía anunciando "v0.4.20" con el producto en v1.0.~~ **Corregido en `f7e9510` (Fase 10):** ahora dice `v1.0 (Fase 10)`; no queda deriva documental conocida (ver `progress.md`).
 5. ~~**Suite headless del guardrail:** portar el banco de 67 consultas a
    `tests/fase8-guardrail-verificacion.html` (convención `RES:`) para que la cobertura del plugin entre en
    la batería automática.~~ **Completado:** la suite existe y queda en **97/97** checks; el plugin ya forma
@@ -209,7 +208,6 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 - ~~**Purga de tablas validada con dobles (Fase 9).**~~ **Resuelto en Fase 10 (`f7e9510`):** la suite
   `tests/fase10-duckdb-real-verificacion.html` verifica la purga contra **DuckDB-WASM real** (22 checks),
   así que el riesgo queda cerrado; el runner SQL añade además 39 checks de consultas analíticas reales.
-- **Datos de ejemplo ausentes**: la suite SQL más completa (**38 casos** en dos baterías) requiere
-  selección manual de archivos que ya no están en el repo → no es ejecutable sin intervención humana.
+- ~~**Datos de ejemplo ausentes.**~~ **Resuelto en Fase 10 (`f7e9510`):** la suite SQL ya no necesita archivos externos (datasets sintéticos en memoria, **39 checks** con `?headless=1 --serve`); los datos de ejemplo siguen fuera del repo y solo afectan al modo manual opcional.
 - **Selector silencioso con una sola hoja cargada:** si el libro tiene una única hoja con datos, la
   barra no se muestra y las hojas omitidas no se anuncian (ver § Por confirmar).

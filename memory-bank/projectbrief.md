@@ -64,7 +64,6 @@ Excel multi‑hoja: **una tabla por pestaña** (`excel_data` + `excel_data_<hoja
 
 ## Por confirmar
 
-- **Datos de ejemplo ausentes:** `TEUs.xlsx` y `RequerimientoPrueba` (necesarios para la batería SQL
-  manual, 38 casos) no están en el repo.
+- **Datos de ejemplo ausentes:** `TEUs.xlsx` y `RequerimientoPrueba` (necesarios para el modo manual del runner SQL, 38 casos) no están en el repo; la batería automatizada usa datasets sintéticos en memoria (**39 checks**).
 - **Identificador único de versión:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto
   es `1.0`; no hay un número de versión único.
