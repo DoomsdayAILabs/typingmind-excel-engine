@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TypingMind Excel Engine — Batería SQL</title>
+  <meta name="tmee-live" content="1">
+  <title>TypingMind Excel Engine — Batería SQL (v1.0 · Fase 10)</title>
   <style>
     :root { color-scheme: light; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #f4f7fb; color: #172033; }
@@ -27,15 +28,16 @@
 </head>
 <body>
   <main>
-    <h1>Batería de pruebas SQL — v0.4.20</h1>
-    <p class="note">Al pulsar <strong>Ejecutar pruebas</strong> se detecta el archivo: <code>TEUs.xlsx</code> usa la batería de 18 filas; <code>RequerimientoPrueba</code> (Fecha, Area, Categoria, Empleado, Turno, Equipo) usa la batería de archivo grande. Todo corre local en DuckDB-Wasm. El JSON solo aparece si una prueba falló. 60 000 filas pueden tardar uno o dos minutos en cargar.</p>
+    <h1>Batería de pruebas SQL — v1.0 (Fase 10)</h1>
+    <p class="note">Las dos baterías (20 consultas sobre <strong>TEUs</strong> y 17 sobre <strong>Requerimiento</strong>) se ejecutan sobre <strong>datasets sintéticos generados en memoria</strong>: ya no hacen falta archivos externos. Todo corre local en DuckDB-Wasm 1.29.0 (descargado de jsDelivr: requiere red). En modo headless la página publica el resultado como <code>RES:</code> en <code>document.title</code> y por <code>POST /__report</code>.</p>
 
     <section class="panel">
       <div class="controls">
-        <label>Archivo Excel: <input id="excel-file" type="file" accept=".xlsx,.xls"></label>
-        <button id="run-tests" type="button" disabled>Ejecutar pruebas</button>
+        <label>Archivo Excel (opcional): <input id="excel-file" type="file" accept=".xlsx,.xls"></label>
+        <button id="run-file" type="button" disabled>Ejecutar con mi archivo</button>
+        <button id="run-tests" type="button">Ejecutar baterías sintéticas</button>
       </div>
-      <p id="status" class="pending">Selecciona <code>TEUs.xlsx</code> o <code>RequerimientoPrueba</code>.</p>
+      <p id="status" class="pending">Listo: pulsa <strong>Ejecutar baterías sintéticas</strong>.</p>
     </section>
 
     <section class="panel">
@@ -65,13 +67,121 @@
     const SUM_2025 = 1535012;
     const SUM_2026 = 661359;
     const GRAND_TOTAL = SUM_2025 + SUM_2026;
+
+    // --- Datasets sintéticos deterministas (sustituyen a TEUs.xlsx y RequerimientoPrueba) ---
+
+    const FECHAS_2025 = ["2025-01-07", "2025-02-11", "2025-03-04", "2025-04-15", "2025-05-06", "2025-06-19",
+                         "2025-07-02", "2025-08-21", "2025-09-09", "2025-10-14", "2025-11-03", "2025-12-12"];
+    const FECHAS_2026 = ["2026-01-16", "2026-02-24", "2026-03-10", "2026-04-28", "2026-05-05", "2026-06-18"];
+
+    /**
+     * Batería TEUs: 18 filas con fechas distintas que reproducen EXACTAMENTE las constantes de la
+     * batería, construidas por grupos [total, local, transshipment]:
+     *   · 2025 · 10 filas con Local > Transshipment  -> 1 383 406 (FILTER_2025)
+     *   · 2025 ·  2 filas con Local <= Transshipment ->   151 606
+     *   · 2026 ·  5 filas con Local > Transshipment  ->   441 359 (FILTER_2026)
+     *   · 2026 ·  1 fila  con Local <= Transshipment ->   220 000
+     * Total 2 196 371 (GRAND_TOTAL) y 15 filas con Local > Transshipment (ROWS_LOCAL_GT_TS).
+     */
+    function construirTeus() {
+      const grupos = [
+        { anio: 2025, fechas: FECHAS_2025.slice(0, 10), totales: [138340, 138340, 138340, 138340, 138340, 138340, 138340, 138340, 138340, 138346], filtro: true },
+        { anio: 2025, fechas: FECHAS_2025.slice(10), totales: [80000, 71606], filtro: false },
+        { anio: 2026, fechas: FECHAS_2026.slice(0, 5), totales: [88272, 88272, 88272, 88272, 88271], filtro: true },
+        { anio: 2026, fechas: FECHAS_2026.slice(5), totales: [220000], filtro: false }
+      ];
+
+      const rows = [];
+      for (const grupo of grupos) {
+        grupo.totales.forEach((total, indice) => {
+          const fecha = grupo.fechas[indice];
+          const mes = Number(fecha.slice(5, 7));
+          const transshipment = grupo.filtro ? Math.floor(total / 3) : Math.ceil(total / 2);
+          const local = total - transshipment;
+          rows.push([fecha, grupo.anio, mes, fecha, local, transshipment, total]);
+        });
+      }
+
+      return { headers: TEUS_HEADERS.slice(), rows: rows };
+    }
+
+    /**
+     * Batería Requerimiento: 120 filas deterministas (sin Math.random). Empleado y Turno son
+     * numéricos (la inferencia de tipos los marca BIGINT) y ~15 % de Equipo queda nulo.
+     */
+    function construirRequerimiento(totalFilas) {
+      const total = totalFilas || 120;
+      const areas = ["Operaciones", "Comercial", "Finanzas"];
+      const categorias = ["Alta", "Media", "Baja"];
+      const equipos = ["EQ-Alfa", "EQ-Beta", "EQ-Gamma"];
+      const rows = [];
+
+      for (let i = 0; i < total; i += 1) {
+        const mes = 1 + (i % 3);
+        const dia = 1 + (i % 28);
+        const fecha = "2026-" + String(mes).padStart(2, "0") + "-" + String(dia).padStart(2, "0");
+        rows.push([
+          fecha,
+          areas[i % areas.length],
+          categorias[(i * 2) % categorias.length],
+          100 + (i % 40),
+          1 + (i % 3),
+          i % 7 === 0 ? null : equipos[i % equipos.length]
+        ]);
+      }
+
+      return { headers: REQUERIMIENTO_HEADERS.slice(), rows: rows };
+    }
+
+    /** Self-test aritmético: el dataset debe reproducir las 8 constantes antes de ejecutar SQL. */
+    function verificarDatasetTeus(dataset) {
+      const problemas = [];
+      const rows = dataset.rows;
+      const suma = (filtro) => rows.filter(filtro).reduce((acc, fila) => acc + Number(fila[6]), 0);
+      const porAnio = (anio, filtro) => rows.filter((fila) => fila[1] === anio && (!filtro || filtro(fila)))
+        .reduce((acc, fila) => acc + Number(fila[6]), 0);
+      const mayorLocal = (fila) => Number(fila[4]) > Number(fila[5]);
+
+      if (!equals(dataset.headers, TEUS_HEADERS)) problemas.push("cabeceras=" + JSON.stringify(dataset.headers));
+      if (rows.length !== TOTAL_ROWS) problemas.push("filas=" + rows.length);
+      if (suma(() => true) !== GRAND_TOTAL) problemas.push("total=" + suma(() => true));
+      if (porAnio(2025) !== SUM_2025) problemas.push("suma2025=" + porAnio(2025));
+      if (porAnio(2026) !== SUM_2026) problemas.push("suma2026=" + porAnio(2026));
+      if (rows.filter(mayorLocal).length !== ROWS_LOCAL_GT_TS) problemas.push("filasFiltro=" + rows.filter(mayorLocal).length);
+      if (suma(mayorLocal) !== SUM_LOCAL_GT_TS) problemas.push("sumaFiltro=" + suma(mayorLocal));
+      if (porAnio(2025, mayorLocal) !== FILTER_2025) problemas.push("filtro2025=" + porAnio(2025, mayorLocal));
+      if (porAnio(2026, mayorLocal) !== FILTER_2026) problemas.push("filtro2026=" + porAnio(2026, mayorLocal));
+      if (new Set(rows.map((fila) => fila[0])).size !== TOTAL_ROWS) problemas.push("fechas no distintas");
+      if (rows.some((fila) => Number(fila[0].slice(0, 4)) !== fila[1])) problemas.push("anio incoherente con la fecha");
+
+      return { ok: problemas.length === 0, detalle: problemas.join(" ; ") };
+    }
     const ROWS_LOCAL_GT_TS = 15;
     const SUM_LOCAL_GT_TS = 1824765;
     const FILTER_2025 = 1383406;
     const FILTER_2026 = 441359;
 
+    // --- Modo headless (Fase 10): con ?headless=1 la página ejecuta las baterías sintéticas y
+    //     publica el resultado en document.title (RES:) y por POST /__report (runner headless). ---
+    const MODO_HEADLESS = new URLSearchParams(location.search).has("headless");
+    const resultados = { checks: [], logs: [] };
+
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+
+    function publicar() {
+      resultados.logs.push("checks=" + resultados.checks.length);
+      const codificado = encodeURIComponent(JSON.stringify(resultados));
+      document.title = "RES:" + codificado;
+      if (location.protocol.indexOf("http") === 0) {
+        fetch("/__report", { method: "POST", body: codificado }).catch(() => {});
+      }
+    }
+
     const fileInput = document.getElementById("excel-file");
     const runButton = document.getElementById("run-tests");
+    const fileButton = document.getElementById("run-file");
     const status = document.getElementById("status");
     const resultsBody = document.getElementById("test-results");
 
@@ -752,25 +862,31 @@ WHERE "Fecha" IS NOT NULL
       conn = await db.connect();
     }
 
-    async function loadExcel(file, onProgress) {
+    /** Carga en excel_data un dataset ya en memoria (matriz de filas), reutilizando la inferencia de tipos. */
+    async function cargarDataset(headers, rows, onProgress) {
       await loadLibraries();
       await createDuckDB();
       await conn.query("DROP TABLE IF EXISTS excel_data;");
-      if (onProgress) onProgress("Leyendo Excel…");
+      if (!headers.length || !rows.length) throw new Error("No se encontraron encabezados o filas con datos.");
+      const inferredTypes = headers.map((header, index) => inferColumnType(index, header, rows));
+      await conn.query(buildCreateTableSql(headers, inferredTypes));
+      const total = rows.length;
+      for (let start = 0; start < total; start += INSERT_BATCH_SIZE) {
+        const batch = rows.slice(start, start + INSERT_BATCH_SIZE);
+        if (onProgress) onProgress("Insertando filas " + Math.min(start + batch.length, total) + " / " + total);
+        await conn.query(buildInsertSql(headers, batch, inferredTypes));
+      }
+      return { headers: headers, rows: rows, inferredTypes: inferredTypes };
+    }
+
+    /** Modo manual: lee la primera hoja del Excel que elija el usuario y la carga con cargarDataset. */
+    async function loadExcel(file, onProgress) {
+      await loadLibraries();
       const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, raw: true });
       const sheetName = workbook.SheetNames?.[0];
       if (!sheetName) throw new Error("El archivo Excel no contiene hojas.");
       const parsed = readWorksheet(workbook.Sheets[sheetName]);
-      if (!parsed.headers.length || !parsed.rows.length) throw new Error("No se encontraron encabezados o filas con datos.");
-      const inferredTypes = parsed.headers.map((header, index) => inferColumnType(index, header, parsed.rows));
-      await conn.query(buildCreateTableSql(parsed.headers, inferredTypes));
-      const total = parsed.rows.length;
-      for (let start = 0; start < total; start += INSERT_BATCH_SIZE) {
-        const batch = parsed.rows.slice(start, start + INSERT_BATCH_SIZE);
-        if (onProgress) onProgress(`Insertando filas ${Math.min(start + batch.length, total)} / ${total}…`);
-        await conn.query(buildInsertSql(parsed.headers, batch, inferredTypes));
-      }
-      return { headers: parsed.headers, rows: parsed.rows, inferredTypes };
+      return cargarDataset(parsed.headers, parsed.rows, onProgress);
     }
 
     async function captureQuery(sql) {
@@ -808,81 +924,155 @@ WHERE "Fecha" IS NOT NULL
       status.className = className;
     }
 
-    async function runTests() {
-      const file = fileInput.files?.[0];
-      if (!file) return;
-      runButton.disabled = true;
-      resultsBody.innerHTML = "";
-      setStatus("Cargando Excel y ejecutando la batería en DuckDB-Wasm local…", "pending");
+    // Ejecuta una batería completa (carga + consultas) y acumula el informe. `cargador` deja el
+    // dataset en excel_data; si falla, todas las consultas de esa batería fallan con el error de
+    // carga (nunca se saltan en silencio).
+    async function ejecutarBateria(etiqueta, tests, cargador, conCheckDeCarga) {
       const report = [];
+      let errorCarga = null;
+
       try {
-        const loaded = await loadExcel(file, (message) => setStatus(message, "pending"));
+        setStatus("Cargando el dataset de " + etiqueta + "...", "pending");
+        await cargador();
+      } catch (error) {
+        errorCarga = (error && error.message) || String(error);
+      }
+
+      if (conCheckDeCarga) {
+        const okCarga = !errorCarga;
+        addResult(etiqueta + " · Carga y columnas", okCarga, okCarga ? null : { error: errorCarga });
+        check(etiqueta + " · Carga y columnas", okCarga, errorCarga || "carga correcta");
+        report.push({ name: etiqueta + " · Carga y columnas", passed: okCarga });
+      }
+
+      for (const test of tests) {
+        const nombre = etiqueta + " · " + test.name;
+
+        if (errorCarga) {
+          addResult(nombre, false, { error: errorCarga });
+          check(nombre, false, errorCarga);
+          report.push({ name: nombre, passed: false, error: errorCarga });
+          continue;
+        }
+
+        setStatus("Ejecutando: " + nombre, "pending");
+        try {
+          const captured = await captureQuery(test.sql);
+          const verdict = test.check(captured.normalizedRows);
+          addResult(nombre, verdict.ok, verdict.ok ? null : {
+            sql: test.sql,
+            error: verdict.error,
+            resultado: captured.normalizedRows,
+            esperado: verdict.esperado ?? null
+          });
+          check(nombre, verdict.ok, verdict.ok ? "" : (verdict.error || "") + " | " + JSON.stringify(captured.normalizedRows).slice(0, 180));
+          report.push({ name: nombre, passed: verdict.ok, sql: test.sql });
+        } catch (error) {
+          const mensaje = (error && error.message) || String(error);
+          addResult(nombre, false, { sql: test.sql, error: mensaje });
+          check(nombre, false, mensaje);
+          report.push({ name: nombre, passed: false, sql: test.sql, error: mensaje });
+        }
+      }
+
+      return report;
+    }
+
+    /** Baterías sintéticas (Fase 10): ambas en serie y sin archivos externos. */
+    async function runSinteticas() {
+      runButton.disabled = true;
+      fileButton.disabled = true;
+      resultsBody.innerHTML = "";
+      resultados.checks.length = 0;
+      resultados.logs.length = 0;
+
+      try {
+        const teus = construirTeus();
+        const verificacion = verificarDatasetTeus(teus);
+        check("Self-test del dataset TEUs (cabeceras, 18 filas y 8 agregados)", verificacion.ok, verificacion.detalle);
+        resultados.logs.push("dataset TEUs: " + teus.rows.length + " filas");
+
+        const requerimiento = construirRequerimiento(120);
+        resultados.logs.push("dataset Requerimiento: " + requerimiento.rows.length + " filas");
+
+        const reportTeus = await ejecutarBateria("TEUs", TESTS_TEUS,
+          () => cargarDataset(teus.headers, teus.rows, (mensaje) => setStatus(mensaje, "pending")), false);
+        const reportRequerimiento = await ejecutarBateria("Requerimiento", buildRequerimientoTests(requerimiento.rows.length),
+          () => cargarDataset(requerimiento.headers, requerimiento.rows, (mensaje) => setStatus(mensaje, "pending")), true);
+
+        const report = reportTeus.concat(reportRequerimiento);
+        const aprobadas = report.filter((item) => item.passed).length + (verificacion.ok ? 1 : 0);
+        const total = report.length + 1;
+        setStatus("Baterías sintéticas: " + aprobadas + "/" + total + " APROBADAS" +
+          (aprobadas === total ? "." : " (revisa el JSON de las que fallaron)."), aprobadas === total ? "pass" : "fail");
+        window.TMSqlTestRunner = { report: report, bateria: "sintetica", rows: teus.rows.length + requerimiento.rows.length };
+      } catch (error) {
+        check("La suite SQL se ejecuta sin excepciones no controladas", false, (error && error.message) || String(error));
+        setStatus("El runner no pudo completar la ejecución.", "fail");
+      } finally {
+        runButton.disabled = false;
+        fileButton.disabled = !fileInput.files?.length;
+      }
+    }
+
+    /** Modo manual: ejecuta la batería que corresponda al Excel elegido por el usuario. */
+    async function runConArchivo(file) {
+      runButton.disabled = true;
+      fileButton.disabled = true;
+      resultsBody.innerHTML = "";
+
+      try {
+        const loaded = await loadExcel(file, (mensaje) => setStatus(mensaje, "pending"));
         const isTeus = equals(loaded.headers, TEUS_HEADERS);
         const isRequerimiento = equals(loaded.headers, REQUERIMIENTO_HEADERS);
-        const batteryName = isTeus ? "TEUs" : isRequerimiento ? "Requerimiento" : null;
-        const tests = isTeus ? TESTS_TEUS : isRequerimiento ? buildRequerimientoTests(loaded.rows.length) : null;
-        const loadPassed = Boolean(batteryName) && (isTeus ? loaded.rows.length === TOTAL_ROWS : loaded.rows.length > 0);
-        addResult("Carga y columnas", loadPassed, loadPassed ? null : {
-          error: batteryName
-            ? "El número de filas no coincide con lo esperado para esta batería."
-            : "Columnas no reconocidas. Se esperaba TEUs o RequerimientoPrueba.",
-          columnas: loaded.headers,
-          teus: TEUS_HEADERS,
-          requerimiento: REQUERIMIENTO_HEADERS,
-          filas: loaded.rows.length,
-          bateria: batteryName
-        });
-        report.push({ name: "Carga y columnas", passed: loadPassed });
-        if (!tests) {
-          setStatus("Archivo no reconocido. Usa TEUs.xlsx o RequerimientoPrueba.", "fail");
-          window.TMSqlTestRunner = { report, headers: loaded.headers };
+        const etiqueta = isTeus ? "TEUs" : isRequerimiento ? "Requerimiento" : null;
+
+        if (!etiqueta) {
+          addResult("Carga y columnas", false, {
+            error: "Columnas no reconocidas. Se esperaba TEUs o RequerimientoPrueba.",
+            columnas: loaded.headers,
+            teus: TEUS_HEADERS,
+            requerimiento: REQUERIMIENTO_HEADERS
+          });
+          setStatus("Archivo no reconocido. Usa un Excel con las columnas de TEUs o de RequerimientoPrueba.", "fail");
+          window.TMSqlTestRunner = { report: [], headers: loaded.headers };
           return;
         }
 
-        for (const test of tests) {
-          setStatus(`Ejecutando: ${test.name}`, "pending");
-          try {
-            const captured = await captureQuery(test.sql);
-            const verdict = test.check(captured.normalizedRows);
-            addResult(test.name, verdict.ok, verdict.ok ? null : {
-              sql: test.sql,
-              error: verdict.error,
-              resultado: captured.normalizedRows,
-              esperado: verdict.esperado ?? null
-            });
-            report.push({ name: test.name, passed: verdict.ok, sql: test.sql });
-          } catch (error) {
-            addResult(test.name, false, {
-              sql: test.sql,
-              error: error?.message || String(error)
-            });
-            report.push({ name: test.name, passed: false, sql: test.sql, error: error?.message || String(error) });
-          }
-        }
-
-        const passedCount = report.filter((item) => item.passed).length;
-        const allPassed = passedCount === report.length;
-        setStatus(
-          allPassed
-            ? `Batería ${batteryName} (${loaded.rows.length} filas): ${passedCount}/${report.length} APROBADAS.`
-            : `Batería ${batteryName} (${loaded.rows.length} filas): ${passedCount}/${report.length} APROBADAS. Revisa el JSON de las que FALLÓ.`,
-          allPassed ? "pass" : "fail"
-        );
-        window.TMSqlTestRunner = { report, battery: batteryName, rows: loaded.rows.length };
+        const tests = isTeus ? TESTS_TEUS : buildRequerimientoTests(loaded.rows.length);
+        const report = await ejecutarBateria(etiqueta, tests, () => Promise.resolve(loaded), true);
+        const aprobadas = report.filter((item) => item.passed).length;
+        setStatus("Batería " + etiqueta + " (" + loaded.rows.length + " filas): " + aprobadas + "/" + report.length + " APROBADAS.",
+          aprobadas === report.length ? "pass" : "fail");
+        window.TMSqlTestRunner = { report: report, bateria: etiqueta, rows: loaded.rows.length };
       } catch (error) {
-        addResult("Ejecución del runner", false, { error: error?.message || String(error) });
+        addResult("Ejecución del runner", false, { error: (error && error.message) || String(error) });
         setStatus("El runner no pudo completar la ejecución.", "fail");
-        console.error(error);
       } finally {
         runButton.disabled = false;
+        fileButton.disabled = !fileInput.files?.length;
       }
     }
 
     fileInput.addEventListener("change", () => {
-      runButton.disabled = !fileInput.files?.length;
-      setStatus(fileInput.files?.length ? `Listo para cargar: ${fileInput.files[0].name}` : "Selecciona TEUs.xlsx o RequerimientoPrueba.", "pending");
+      fileButton.disabled = !fileInput.files?.length;
+      setStatus(fileInput.files?.length ? "Listo para cargar: " + fileInput.files[0].name : "Listo: pulsa Ejecutar baterías sintéticas.", "pending");
     });
-    runButton.addEventListener("click", runTests);
+    runButton.addEventListener("click", runSinteticas);
+    fileButton.addEventListener("click", () => {
+      const file = fileInput.files?.[0];
+      if (file) runConArchivo(file);
+    });
+
+    // Modo headless: ?headless=1 ejecuta en serie las dos baterías y publica RES: / POST /__report.
+    if (MODO_HEADLESS) {
+      runSinteticas()
+        .then(publicar)
+        .catch((error) => {
+          check("La suite SQL se ejecuta sin excepciones no controladas", false, (error && error.message) || String(error));
+          publicar();
+        });
+    }
   </script>
 </body>
 </html>

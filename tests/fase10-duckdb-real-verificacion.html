@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="tmee-live" content="1" />
+  <title>Verificación Fase 10 (purga real de tablas contra DuckDB-WASM)</title>
+  <style>
+    body { background: #111318; color: #f3f4f6; font-family: sans-serif; }
+    #verify-results { font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>Verificación Fase 10 — ciclo de vida real de las tablas (Worker + DuckDB-WASM 1.29.0 + SheetJS 0.18.5)</h1>
+
+  <div id="verify-results"></div>
+
+  <!-- Ejecutar:
+       node tests/run-headless.js tests/fase10-duckdb-real-verificacion.html --serve --budget=180000
+       La página declara <meta name="tmee-live"> porque necesita red y trabajo real del Worker: con el
+       tiempo virtual de Chrome los temporizadores de la página se adelantarían al Worker. En modo
+       tiempo real el runner espera el informe POST /__report y cierra el navegador al recibirlo. -->
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <script>
+    const resultados = { checks: [], logs: [] };
+
+    function check(nombre, ok, extra) {
+      resultados.checks.push({ nombre: nombre, ok: !!ok, extra: extra === undefined ? "" : String(extra) });
+    }
+
+    function publicar() {
+      resultados.logs.push("checks=" + resultados.checks.length);
+      const codificado = encodeURIComponent(JSON.stringify(resultados));
+      document.title = "RES:" + codificado;
+      document.getElementById("verify-results").textContent = JSON.stringify(resultados, null, 2);
+      if (location.protocol.indexOf("http") === 0) {
+        fetch("/__report", { method: "POST", body: codificado }).catch(() => {});
+      }
+    }
+
+    let errorGlobal = "";
+    window.addEventListener("error", (evento) => { errorGlobal = evento.message || "error global"; });
+
+    // --- Puente con el Worker real del proyecto ---
+    const pendientes = new Map();
+    let siguiente = 1;
+    let worker = null;
+
+    function pedir(type, payload, timeoutMs) {
+      const requestId = "f10_" + (siguiente++);
+      const limite = timeoutMs || 120000;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pendientes.delete(requestId);
+          reject(new Error("timeout de " + limite + " ms en " + type));
+        }, limite);
+        pendientes.set(requestId, { resolve: resolve, reject: reject, timer: timer });
+        worker.postMessage(Object.assign({ type: type, requestId: requestId }, payload || {}));
+      });
+    }
+
+    const sql = (consulta) => pedir("executeQuery", { sql: consulta }, 60000);
+
+    async function tablas() {
+      const filas = await sql("SHOW TABLES");
+      return filas.map((fila) => String(fila.name)).sort();
+    }
+
+    async function tablasInfo() {
+      const filas = await sql("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'");
+      return filas.map((fila) => String(fila.table_name)).sort();
+    }
+
+    function libroXlsx(hojas) {
+      const libro = XLSX.utils.book_new();
+      for (const hoja of hojas) {
+        XLSX.utils.book_append_sheet(libro, XLSX.utils.aoa_to_sheet(hoja.filas), hoja.nombre);
+      }
+      return XLSX.write(libro, { bookType: "xlsx", type: "array" });
+    }
+
+    const cargar = (hojas) => pedir("loadExcel", { excelBuffer: libroXlsx(hojas), tableName: "excel_data" }, 120000);
+
+    // Ejecuta un paso y devuelve { ok, valor } o { ok: false, error } sin abortar la suite.
+    async function intentar(fn) {
+      try {
+        return { ok: true, valor: await fn() };
+      } catch (error) {
+        return { ok: false, error: (error && error.message) || String(error) };
+      }
+    }
+
+    (async function run() {
+      try {
+        // --- 0. Entorno ---
+        const hayXlsx = typeof XLSX === "object" && XLSX !== null && typeof XLSX.utils === "object" && typeof XLSX.utils.book_new === "function";
+        check("SheetJS 0.18.5 disponible (CDN jsDelivr)", hayXlsx, hayXlsx ? String(XLSX.version) : "XLSX no cargado");
+
+        // --- 1. Worker real del proyecto + initDuckDB ---
+        const arranque = await intentar(async () => {
+          worker = new Worker("../duckdb-worker.js");
+          worker.onmessage = (evento) => {
+            const sobre = evento.data || {};
+            const item = pendientes.get(sobre.requestId);
+            if (!item) return;
+            clearTimeout(item.timer);
+            pendientes.delete(sobre.requestId);
+            if (sobre.success) item.resolve(sobre.data);
+            else item.reject(new Error(sobre.error));
+          };
+          worker.onerror = (evento) => { errorGlobal = evento.message || "error de worker"; };
+          return pedir("initDuckDB", {}, 180000);
+        });
+        const init = arranque.ok ? arranque.valor : null;
+        check("initDuckDB real responde ready", arranque.ok && !!init && init.status === "ready",
+          arranque.ok ? JSON.stringify(init && init.status) : arranque.error);
+        check("WORKER_VERSION de Fase 9 en el Worker real",
+          arranque.ok && !!init && init.version === "v1.0-phase-9+tables-lifecycle",
+          arranque.ok ? String(init && init.version) : arranque.error);
+
+        const uno = await intentar(() => sql("SELECT 1 AS ok"));
+        check("executeQuery real: SELECT 1 AS ok", uno.ok && uno.valor.length === 1 && uno.valor[0].ok === 1,
+          uno.ok ? JSON.stringify(uno.valor) : uno.error);
+
+        // --- 2. Excel A: 3 hojas útiles ---
+        const rA = await intentar(() => cargar([
+          { nombre: "Datos", filas: [["id", "nombre"], [1, "Ana"], [2, "Luis"]] },
+          { nombre: "Resumen", filas: [["clave", "valor"], ["total", 10]] },
+          { nombre: "Ventas 2024", filas: [["id", "importe"], [1, 100], [2, 250]] }
+        ]));
+        check("Excel A (3 hojas): 3 tablas y primaria excel_data",
+          rA.ok && rA.valor.hojas_cargadas === 3 && rA.valor.tabla === "excel_data",
+          rA.ok ? rA.valor.hojas.map((h) => h.tabla).join("|") : rA.error);
+        check("Excel A: nombres saneados de las 3 pestañas",
+          rA.ok && rA.valor.hojas.map((h) => h.tabla).join("|") === "excel_data|excel_data_Resumen|excel_data_Ventas_2024",
+          rA.ok ? rA.valor.hojas.map((h) => h.tabla).join("|") : rA.error);
+
+        const tA = await intentar(tablas);
+        check("SHOW TABLES tras Excel A lista las 3 tablas reales",
+          tA.ok && tA.valor.join("|") === "excel_data|excel_data_Resumen|excel_data_Ventas_2024",
+          tA.ok ? tA.valor.join("|") : tA.error);
+        const iA = await intentar(tablasInfo);
+        check("information_schema.tables coincide con SHOW TABLES",
+          iA.ok && iA.valor.join("|") === "excel_data|excel_data_Resumen|excel_data_Ventas_2024",
+          iA.ok ? iA.valor.join("|") : iA.error);
+
+        // --- 3. Excel B con menos hojas: purga real de la huérfana ---
+        const rB = await intentar(() => cargar([
+          { nombre: "Datos", filas: [["id", "nombre"], [9, "Zoe"]] },
+          { nombre: "Ventas 2024", filas: [["id", "importe"], [3, 999]] }
+        ]));
+        check("Excel B (2 hojas) carga sin error", rB.ok && rB.valor.hojas_cargadas === 2,
+          rB.ok ? String(rB.valor.hojas_cargadas) : rB.error);
+        const tB = await intentar(tablas);
+        check("PURGA REAL: excel_data_Resumen desaparece de DuckDB",
+          tB.ok && tB.valor.join("|") === "excel_data|excel_data_Ventas_2024",
+          tB.ok ? tB.valor.join("|") : tB.error);
+        const iB = await intentar(tablasInfo);
+        check("information_schema.tables confirma la purga",
+          iB.ok && iB.valor.join("|") === "excel_data|excel_data_Ventas_2024",
+          iB.ok ? iB.valor.join("|") : iB.error);
+        const dB = await intentar(() => sql("SELECT nombre FROM excel_data ORDER BY id"));
+        check("Los datos vigentes son los del libro B (CREATE OR REPLACE real)",
+          dB.ok && dB.valor.length === 1 && dB.valor[0].nombre === "Zoe",
+          dB.ok ? JSON.stringify(dB.valor) : dB.error);
+
+        // --- 4. Excel C con hoja 0 vacía: la tabla fantasma se elimina ---
+        const rC = await intentar(() => cargar([
+          { nombre: "Portada", filas: [[""]] },
+          { nombre: "Ventas", filas: [["id", "importe"], [7, 700]] }
+        ]));
+        check("Excel C: la hoja 0 se omite y la primaria es excel_data_Ventas",
+          rC.ok && rC.valor.tabla === "excel_data_Ventas" && rC.valor.hojas[0].estado === "omitida",
+          rC.ok ? JSON.stringify(rC.valor.hojas) : rC.error);
+        const tC = await intentar(tablas);
+        check("TABLA FANTASMA ELIMINADA: excel_data ya no existe en DuckDB",
+          tC.ok && tC.valor.join("|") === "excel_data_Ventas", tC.ok ? tC.valor.join("|") : tC.error);
+        const fantasma = await intentar(() => sql("SELECT * FROM excel_data LIMIT 1"));
+        check("Consultar la tabla fantasma falla de verdad (catálogo real)",
+          !fantasma.ok && /does not exist|catalog/i.test(fantasma.error), fantasma.ok ? "no falló" : fantasma.error);
+
+        // --- 5. Tabla del usuario: se preserva en el motor real ---
+        const creacion = await intentar(() => sql("CREATE TABLE mia AS SELECT 42 AS respuesta"));
+        check("CREATE TABLE mia por executeQuery (consola del usuario)", creacion.ok, creacion.error);
+        const lectura = await intentar(() => sql("SELECT respuesta FROM mia"));
+        check("La tabla del usuario devuelve sus datos",
+          lectura.ok && lectura.valor[0].respuesta === 42, lectura.ok ? JSON.stringify(lectura.valor) : lectura.error);
+        const rD = await intentar(() => cargar([{ nombre: "Datos", filas: [["id", "nombre"], [5, "Eva"]] }]));
+        const tD = await intentar(tablas);
+        check("La tabla del usuario sobrevive a una carga nueva",
+          rD.ok && tD.ok && tD.valor.join("|") === "excel_data|mia",
+          tD.ok ? tD.valor.join("|") : tD.error);
+
+        // --- 6. Case-insensitivity real del DROP entrecomillado ---
+        const mayus = await intentar(() => sql('CREATE TABLE "MiTabla" AS SELECT 1 AS x'));
+        const borrado = await intentar(() => sql('DROP TABLE IF EXISTS "mitabla"'));
+        const tE = await intentar(tablas);
+        check("Case-insensitivity real: DROP TABLE IF EXISTS \"mitabla\" elimina MiTabla",
+          mayus.ok && borrado.ok && tE.ok && tE.valor.indexOf("MiTabla") === -1,
+          tE.ok ? tE.valor.join("|") : tE.error);
+
+        // --- 7. Idempotencia del DROP y estado final del catálogo ---
+        const idem = await intentar(() => sql('DROP TABLE IF EXISTS "tabla_inexistente_f10"'));
+        check("Idempotencia: DROP TABLE IF EXISTS de una tabla inexistente no falla", idem.ok, idem.error);
+        const tFinal = await intentar(tablas);
+        check("Estado final: solo el libro vigente y la tabla del usuario",
+          tFinal.ok && tFinal.valor.join("|") === "excel_data|mia", tFinal.ok ? tFinal.valor.join("|") : tFinal.error);
+        check("Sin errores no capturados en la página", errorGlobal === "", errorGlobal);
+      } catch (error) {
+        check("La suite se ejecuta sin excepciones no controladas", false, (error && error.message) || String(error));
+      }
+      publicar();
+    })();
+  </script>
+</body>
+</html>
