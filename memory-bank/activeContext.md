@@ -1,9 +1,20 @@
 # Active Context — TypingMind Excel Engine
 
 > Foco de trabajo actual, cambios recientes, siguientes pasos y decisiones activas.
-> Última actualización: **2026‑10‑01** (suite headless de Fase 8 en `tests/fase8-guardrail-verificacion.html`, 97 checks sobre el banco de 67 consultas; commit del producto `be03349`).
+> Última actualización: **2026‑10‑01** (Fase 9 cerrada: ciclo de vida de tablas y listeners con `tests/fase9-ciclo-vida-verificacion.html` de 50 checks; batería de 5 suites con 302 checks; commits `88c99e6` + docs).
 
 ## Foco actual
+
+**Fase 9 completada: ciclo de vida de tablas y listeners.** El Worker mantiene un `Map tablasGestionadas`
+(clave en minúsculas → nombre exacto con el que se creó) y purga con `DROP TABLE IF EXISTS` las tablas que
+gestionó una carga anterior y que el libro vigente ya no materializa, incluida `excel_data` cuando la hoja 0
+del nuevo libro está vacía (antes quedaba como tabla fantasma con los datos del archivo anterior). La
+limpieza se ejecuta solo tras una carga exitosa (una carga fallida conserva el dataset) y **nunca** toca las
+tablas creadas a mano en la consola SQL, porque `executeQuery` no registra nada. En el plugin, el listener
+`onMessage` se retira ahora en los **tres** desenlaces: al emparejar la respuesta, al vencer el timeout de
+30 s (B1) y si `window.parent.postMessage` lanza (B2, que además cancela el temporizador). Nueva suite
+`tests/fase9-ciclo-vida-verificacion.html` con **50/50** checks y `WORKER_VERSION` pasa a
+`v1.0-phase-9+tables-lifecycle`. Commits: **`88c99e6`** (producto + suites) y el commit de docs posterior.
 
 **Fase 8 completada: el guardrail del plugin deja de ser una lista negra textual.** `plugin/implementation.js`
 reescribe la validación en cuatro comprobaciones en cadena: saneado de comentarios y literales en una pasada
@@ -27,14 +38,17 @@ Plugin IA y UI).
 
 ## Estado del repositorio (verificado en esta sesión)
 
+- Commit del producto (Fase 9 · ciclo de vida): **`88c99e6`** — `feat(lifecycle): purga automatica de
+  tablas obsoletas en worker, limpieza de listener en plugin y suite Fase 9 (50 checks)` (4 archivos,
+  +454 / -5; incluye la suite nueva `tests/fase9-ciclo-vida-verificacion.html`).
 - Commit del producto (Fase 8 · guardrail): **`be03349`** — `feat(plugin): guardrail robusto de solo
   lectura con lista blanca y saneado de literales (Fase 8)` (1 archivo, +81 / -2).
 - Commits previos del producto: **`686a46e`** (Fase 7 · pin de SheetJS `0.18.5`) y **`d876db4`** (Fase 6 · UI).
-- Este documento se actualiza en el commit `docs: sincronizar spec de plugin, docs y memory-bank con
-  guardrail Fase 8`, inmediatamente posterior a `be03349`.
+- Este documento se actualiza en el commit `docs: sincronizar README y memory-bank con Fase 9 (ciclo de
+  vida y 302 checks)`, inmediatamente posterior a `88c99e6`.
 - **Working tree limpio** y rama `main` sincronizada con `origin/main` tras el push.
 - Sin `package.json`, sin CI, sin `.github/`. Repo estático servido por GitHub Pages.
-- La extensión se mantiene en **849 líneas**; el Worker pasa a **600 líneas** al añadir la constante
+- La extensión se mantiene en **849 líneas**; el Worker pasa a **661 líneas** al añadir la constante
   `SHEETJS_PACKAGE` y `importScripts(SHEETJS_PACKAGE)`.
 
 ## Verificación ejecutada en esta sesión
@@ -42,7 +56,8 @@ Plugin IA y UI).
 | Comprobación | Comando | Resultado |
 |---|---|---|
 | Sintaxis (3 archivos) | `node --check duckdb-worker.js` · `plugin/implementation.js` · `typingmind-excel-engine-v1.0.js` | OK (exit 0 ×3) |
-| Suite Fase 8 | `node tests/run-headless.js tests/fase8-guardrail-verificacion.html` | **97/97 OK** (exit 0) |
+| Suite Fase 9 | `node tests/run-headless.js tests/fase9-ciclo-vida-verificacion.html` | **50/50 OK** (exit 0) |
+| Suite Fase 8 | `node tests/run-headless.js tests/fase8-guardrail-verificacion.html` | **98/98 OK** (exit 0) |
 | Suite Fase 6 | `node tests/run-headless.js tests/fase6-multisheet-verificacion.html` | **85/85 OK** (exit 0) |
 | Suite Fase 5 | `node tests/run-headless.js tests/fase5-verificacion.html` | **44/44 OK** (exit 0) |
 | Suite Fase 3B | `node tests/run-headless.js tests/fase3b-verificacion.html` | **25/25 OK** (exit 0) |
@@ -52,8 +67,8 @@ Plugin IA y UI).
 | GitHub Pages | descarga de `typingmind-excel-engine-v1.0.js` desde Pages | cabecera **“Fase 6”** (la extensión no cambió en Fase 7) |
 | Artefacto de jsDelivr | `HEAD .../xlsx@0.18.5/dist/xlsx.full.min.js` vs. URL sin pin | 200 · **881 727 bytes en ambos** (equivalencia exacta) |
 | `latest` de npm `xlsx` | `https://data.jsdelivr.com/v1/packages/npm/xlsx` | `{"latest":"0.18.5"}` |
-| README | BOM + líneas + conteo CRLF/LF | sin BOM · **527 líneas** · 527 CRLF · 0 LF sueltos · 32 445 bytes |
-| Worker | BOM + líneas + conteo CRLF/LF | con BOM · **600 líneas** · 600 CRLF · 0 LF sueltos |
+| README | BOM + líneas + conteo CRLF/LF | sin BOM · **551 líneas** · 551 CRLF · 0 LF sueltos · 35 438 bytes |
+| Worker | BOM + líneas + conteo CRLF/LF | con BOM · **661 líneas** · 661 CRLF · 0 LF sueltos |
 | Integridad de caracteres | conteo de `U+FFFD` y `U+00C3` en los 3 archivos | **0 y 0** (sin doble codificación) |
 
 Ver detalle en `testing-strategy.md` y `techContext.md`.
@@ -63,7 +78,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 1. **El Memory Bank vive en `memory-bank/` en la raíz del repo** (6 archivos núcleo + 2 de contexto:
    `plugin-bridge-protocol.md` y `testing-strategy.md`).
 2. **Regla de oro heredada del README (§ Contribuir):** no tocar `typingmind-excel-engine-v1.0.js` ni
-   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **cuatro**: Fase 8, Fase 6, Fase 5
+   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **cinco**: Fase 9, Fase 8, Fase 6, Fase 5
    y Fase 3B); y mantener sincronizados `README.md` (producto) y `plugin/README.md` (integración IA).
 3. **La retrocompatibilidad del nombre `excel_data` es intocable**: el plugin, las suites SQL y la
    documentación dependen de que la hoja 0 conserve el nombre base.
@@ -99,6 +114,10 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
    `tests/fase8-guardrail-verificacion.html` (convención `RES:`) para que la cobertura del plugin entre en
    la batería automática.~~ **Completado:** la suite existe y queda en **97/97** checks; el plugin ya forma
    parte de la batería automática (ver `testing-strategy.md`).
+6. ~~**Ciclo de vida de tablas y listeners**~~ **Completado en `88c99e6` (Fase 9):** purga automática de las
+   tablas gestionadas obsoletas en el Worker (Map `tablasGestionadas` con limpieza post-éxito) y retirada
+   garantizada del listener del plugin en timeout y en error de `postMessage`, con suite de 50 checks.
+   Pendiente: pasada manual contra DuckDB real (`SHOW TABLES` sin huérfanas).
 
 ## Patrones y aprendizajes de esta sesión
 
@@ -117,7 +136,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
   ya hacía con `fetch` y `Worker`— porque su objeto es la UI, no el I/O del navegador.
 - **Por qué el FAB no cambia:** la barra de hojas vive **dentro** de `.tmee-body`, que el modo icono
   oculta con `display: none !important`; el test lo mide (50×50 px) y también con el rect a 0.
-- **`core.autocrlf=true`:** el working tree conserva CRLF (README: 527 líneas / 527 CRLF / 0 LF) pero
+- **`core.autocrlf=true`:** el working tree conserva CRLF (README: 551 líneas / 551 CRLF / 0 LF) pero
   el blob del repo se normaliza a LF, así que GitHub Pages sirve ~1 byte menos por línea que el disco.
   **No es un problema de sincronía.**
 - **`git push` puede devolver `exit 1` en falso:** PowerShell interpreta el progreso de git en `stderr`
@@ -127,6 +146,17 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 - **Las lecturas por rango (`start_line`/`end_line`) pueden fallar sobre archivos ya cacheados** en la
   sesión; alternativa: leer el archivo completo o `Get-Content | Select-Object -Skip N -First M`.
 - `git --no-pager` evita quedarse colgado en el paginador dentro de la shell no interactiva.
+- **El `Map` con la grafía original evita depender del cotejo de mayúsculas de DuckDB:** las claves se
+  normalizan a minúsculas para deduplicar, pero el `DROP` se emite con el nombre tal cual se creó; la suite
+  de Fase 9 lo comprueba (un `DROP` con la grafía equivocada se registra como deriva).
+- **Cargar el archivo de producto real como script global:** una etiqueta `<script src="../duckdb-worker.js">`
+  seguida de un script del arnés da acceso a sus `let`/`const` de nivel superior (`db`, `conn`,
+  `tablasGestionadas`, `loadCSV`…) sin `vm` ni `fetch`, imposibles en `file://` headless.
+- **Dos expectativas erróneas en el test, no en el producto:** en un libro `["A","B"]` la hoja 0 ocupa el
+  nombre base (no existe `excel_data_A`) y `ocurrencias()` contaba sobre todo el SQL histórico; medir por
+  tramo (`sqlEmitido.slice(marca)`) es lo que hace determinista la aserción.
+- **BOM y CRLF sobreviven a las herramientas de edición por anclas:** en esta sesión bastó con comprobar
+  el BOM y el recuento CRLF/LF después de cada archivo tocado, sin reescribir con `ReadAllText`.
 
 ## Por confirmar
 
@@ -136,7 +166,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 - Ubicación/estado de los datos de ejemplo (`TEUs.xlsx`, `RequerimientoPrueba`) necesarios para la
   suite SQL manual: fueron retirados del repo.
 - Si se desea restaurar `index.html` (historial de versiones descargables).
-- Identificador único de versión: el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
+- Identificador único de versión: el Worker declara `v1.0-phase-9+tables-lifecycle` mientras el producto es
   `1.0`; no hay un único número de versión.
 
 ## Riesgos vivos
@@ -147,6 +177,9 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
   ampliada + bloqueo de apiladas) con 0 FP / 0 FN sobre el banco de 67 consultas, pero sigue siendo
   heurístico. Queda como línea futura el endurecimiento estructural: una conexión DuckDB restringida para
   el plugin, que hoy comparte conexión con la consola manual del usuario.
+- **Purga de tablas validada con dobles (Fase 9):** la suite comprueba la lógica con un catálogo en memoria
+  y el registro del SQL emitido; la verificación contra DuckDB real (`SHOW TABLES` sin huérfanas y `DROP` de
+  un identificador entrecomillado) queda pendiente de una pasada manual.
 - **Datos de ejemplo ausentes**: la suite SQL más completa (**38 casos** en dos baterías) requiere
   selección manual de archivos que ya no están en el repo → no es ejecutable sin intervención humana.
 - **Selector silencioso con una sola hoja cargada:** si el libro tiene una única hoja con datos, la

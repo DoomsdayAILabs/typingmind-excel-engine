@@ -58,7 +58,7 @@ Excel multi‑hoja: **una tabla por pestaña** (`excel_data` + `excel_data_<hoja
 
 ## Documentación y trazabilidad
 
-- `README.md` — documentación de producto (527 líneas).
+- `README.md` — documentación de producto (551 líneas).
 - `plugin/README.md` — integración del plugin / contrato del puente (161 líneas).
 - `memory-bank/` — continuidad entre sesiones de trabajo (este directorio).
 

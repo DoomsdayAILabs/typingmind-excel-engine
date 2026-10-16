@@ -53,7 +53,7 @@ query_excel_data({ sql_query: string })   // sql_query REQUERIDO
 ```
 
 - Acepta por compatibilidad `params.sql` o `params.query` como alias.
-- **Timeout: 30 s.** Si no hay respuesta: "Error: Timeout. El motor local no respondió…".
+- **Timeout: 30 s.** Si no hay respuesta (y el listener se retira en ese mismo instante): "Error: Timeout. El motor local no respondió…".
 - Resuelve **siempre como texto** (`outputType: respond_to_ai`); nunca lanza al modelo.
 - Salidas posibles: tabla Markdown, "Consulta ejecutada con éxito (0 resultados).",
   "Error SQL del motor local: …", "Error: Solo se permiten consultas de lectura…",
@@ -107,7 +107,10 @@ Saneado (`sanitizeSheetSuffix` + `buildSheetTableName` del Worker): no alfanumé
 útiles, y sufijos `_2`, `_3`… ante colisiones de saneado (case‑insensitive).
 
 **Si la hoja 0 está vacía, `excel_data` NO existe** (la tabla primaria pasa a ser la primera pestaña
-con datos). Por eso el spec ordena **listar tablas antes de consultar** en lugar de asumir el nombre.
+con datos). Por eso el spec ordena **listar tablas antes de consultar** en lugar de asumir el nombre. Desde la Fase 9
+el Worker además **purga** (`DROP TABLE IF EXISTS`) las tablas que gestionó una carga anterior y que el
+libro vigente ya no materializa (incluida `excel_data` si la hoja 0 del nuevo libro está vacía), de modo
+que `SHOW TABLES` refleja solo el libro vigente más las tablas creadas a mano por el usuario.
 
 SQL que el spec enseña al modelo:
 
@@ -147,7 +150,7 @@ JOIN excel_data_ventas_2024 v ON d.id = v.id WHERE v.importe > 150;
 
 ## Detalles de implementación obligatorios
 
-- Cada llamada registra su **propio** listener y lo retira al resolver → no se acumulan handlers.
+- Cada llamada registra su **propio** listener y lo retira **siempre** (al resolver, al vencer el timeout de 30 s o si `postMessage` lanza) → no se acumulan handlers.
 - El plugin es **sin estado**: no guarda historial entre consultas.
 - Requiere que la Extensión esté activa en la misma pestaña y que haya un archivo cargado
   (las tablas `excel_data*` solo existen tras una carga).

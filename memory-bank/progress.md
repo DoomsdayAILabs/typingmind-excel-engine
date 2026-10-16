@@ -3,26 +3,27 @@
 > Qué funciona, qué falta, estado actual e issues conocidos.
 > Estado evaluado el **2026‑10‑01**; commits del producto **`d876db4`** (Fase 6 · UI desplegada),
 > **`be03349`** (Fase 8 · guardrail robusto del plugin: saneado + lista blanca + lista negra ampliada) y
-> **`3e0b3f7`** (suite headless del guardrail, 97 checks) más el commit de documentación que sincroniza este Memory Bank.
+> **`3e0b3f7`** (suite headless del guardrail) y **`88c99e6`** (Fase 9 · ciclo de vida: purga de tablas
+> obsoletas, listener garantizado y suite de 50 checks) más el commit de documentación que sincroniza este Memory Bank.
 
 ## Estado actual
 
 **El soporte multi-hoja está 100 % cerrado en las tres piezas (Worker, Plugin IA y UI Widget) y las
 dependencias externas quedan fijadas.** SheetJS pasa de etiqueta flotante a **`0.18.5`** (`686a46e`),
 así que DuckDB‑WASM `1.29.0` y SheetJS `0.18.5` son las dos únicas versiones que carga el Worker. Las
-cuatro suites headless están en verde (**97/97**, 85/85, 44/44 y 25/25) y GitHub Pages sirve la build de Fase 6
-(cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**527 líneas**) ya no describe
+cinco suites headless están en verde (**50/50**, 98/98, 85/85, 44/44 y 25/25 = 302 checks) y GitHub Pages sirve la build de Fase 6
+(cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**551 líneas**) ya no describe
 archivos inexistentes, declara la licencia MIT oficial y sus listas de sentencias permitidas y de
 descubrimiento de esquema coinciden con el plugin real. El repositorio está **limpio y sincronizado**
 con `origin/main`. **Fase 8 (`be03349`):** el guardrail del plugin pasa de lista negra textual a cuatro
 comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo de apiladas), con
-**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas, ya empaquetado en la suite headless `tests/fase8-guardrail-verificacion.html` (**97/97**).
+**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas, ya empaquetado en la suite headless `tests/fase8-guardrail-verificacion.html` (**98/98**). **Fase 9 (`88c99e6`):** el Worker mantiene un `Map tablasGestionadas` (clave en minúsculas -> nombre exacto) y purga (`DROP TABLE IF EXISTS`, solo tras una carga exitosa) las tablas gestionadas que el libro vigente ya no materializa —incluida `excel_data` si la hoja 0 del nuevo libro está vacía— sin tocar las tablas creadas a mano en la consola SQL; el plugin retira su listener en los tres desenlaces (respuesta, timeout de 30 s y fallo de `postMessage`). Suite nueva de **50 checks** (`tests/fase9-ciclo-vida-verificacion.html`).
 
 ## Qué funciona (verificado)
 
 ### Motor (worker)
 - Inicialización de DuckDB‑WASM 1.29.0 con Blob Worker anidado (`initDuckDB` → versión
-  `v1.0-phase-1b+multisheet`).
+  `v1.0-phase-9+tables-lifecycle`).
 - **CSV:** `registerFileText` → `CREATE OR REPLACE TABLE` con `read_csv_auto(sample_size=-1,
   ignore_errors=true)` → conteo, esquema (`information_schema.columns`) y preview de 10 filas.
 - **Parquet:** `registerFileBuffer` → `read_parquet` (llega por transferable).
@@ -33,6 +34,9 @@ comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo 
 - **Normalización de tipos** en la frontera `postMessage` (BIGINT fuera de rango → string,
   HugeInt/Decimal, fechas ISO, binarios a arrays).
 - **Limpieza del VFS** (`dropFile`) en el `finally` de las tres rutas de carga.
+- **Purga de tablas obsoletas (Fase 9):** `Map tablasGestionadas` (clave en minúsculas -> nombre exacto) y
+  `limpiarTablasObsoletas()` al final de cada carga exitosa; las tablas del usuario quedan intactas y un
+  `DROP` fallido se reintenta en la carga siguiente.
 
 ### Extensión (UI + puente)
 - Widget inyectado con estado, dropzone, consola SQL, tabla (100 filas) y metadatos.
@@ -61,7 +65,7 @@ comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo 
 - Guardrail de solo lectura **Fase 8** (bloque de guardrail, líneas 35-103): saneado de comentarios y
   literales en una pasada (`saneaSQL`) + lista blanca (`SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`) +
   lista negra ampliada + rechazo de sentencias apiladas y de literales sin cerrar; **0 FP / 0 FN** sobre el
-  banco de 67 consultas. Timeout de 30 s, listener por llamada y respuesta Markdown ≤ 50 filas (contrato
+  banco de 67 consultas. Timeout de 30 s, listener por llamada retirado en los tres desenlaces (respuesta, timeout o fallo de `postMessage`) y respuesta Markdown ≤ 50 filas (contrato
   verificado 22/22).
 - Spec multi‑hoja con descubrimiento de tablas (`information_schema.tables` / `SHOW TABLES`,
   `DESCRIBE` / `information_schema.columns`); ya **no** advierte sobre palabras reservadas dentro de
@@ -73,7 +77,8 @@ comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo 
 
 | Suite | Checks | Resultado |
 |---|---|---|
-| `tests/fase8-guardrail-verificacion.html` | 97 | **OK 97 / FAIL 0** |
+| `tests/fase9-ciclo-vida-verificacion.html` | 50 | **OK 50 / FAIL 0** |
+| `tests/fase8-guardrail-verificacion.html` | 98 | **OK 98 / FAIL 0** |
 | `tests/fase6-multisheet-verificacion.html` | 85 | **OK 85 / FAIL 0** |
 | `tests/fase5-verificacion.html` | 44 | **OK 44 / FAIL 0** |
 | `tests/fase3b-verificacion.html` | 25 | **OK 25 / FAIL 0** |
@@ -117,7 +122,7 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 1. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
    `RequerimientoPrueba`; esos datos de ejemplo ya no están en el repo, así que la batería SQL más
    amplia (**38 casos**: 20 + 18) **no es automatizable hoy**. Ver `testing-strategy.md`.
-2. **Versión del producto:** el Worker declara `v1.0-phase-1b+multisheet` mientras el producto es
+2. **Versión del producto:** el Worker declara `v1.0-phase-9+tables-lifecycle` mientras el producto es
    `1.0`; no hay un único identificador de versión.
 3. **Título de `tests/sql-test-runner.html`:** anuncia "Batería de pruebas SQL — v0.4.20" con el
    producto en v1.0.
@@ -127,10 +132,8 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 
 ## Issues y riesgos conocidos
 
-- **Tablas huérfanas entre cargas:** cada carga recrea la tabla base pero **no elimina** las
-  `excel_data_<hoja>` de un libro anterior con más pestañas (documentado en README líneas 379‑385).
-  El **selector de hojas no las muestra** (se construye desde `result.hojas` del libro vigente), pero
-  siguen siendo consultables con `SHOW TABLES` y desde la consola SQL.
+- ~~**Tablas huérfanas entre cargas.**~~ **Resuelto en `88c99e6` (Fase 9):** el Worker mantiene el `Map` `tablasGestionadas` (clave en minúsculas -> nombre original) y purga con `DROP TABLE IF EXISTS` las tablas que gestionó una carga anterior y que el libro vigente ya no materializa, incluida `excel_data` cuando la hoja 0 del nuevo libro está vacía. Las tablas creadas a mano en la consola SQL nunca entran en el Map y una carga fallida conserva el dataset anterior (la limpieza corre solo tras un éxito).
+- ~~**Fuga de listener en el timeout del plugin.**~~ **Resuelto en `88c99e6` (Fase 9):** el temporizador de 30 s retira el `onMessage` y el `catch` de `postMessage` lo retira y cancela el temporizador, así que no sobrevive ningún closure por consulta.
 - ~~**Guardrail = lista negra textual.**~~ **Resuelto en `be03349` (Fase 8).** El guardrail es ahora lista
   blanca (`SELECT`, `WITH`, `EXPLAIN`, `SHOW`, `DESCRIBE`) + saneado de comentarios y literales + lista
   negra ampliada, que sí bloquea `TRUNCATE`, `INSTALL`, `LOAD`, `SET`, `CALL`, `VACUUM`, `CHECKPOINT`,
@@ -175,6 +178,8 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 | Memory Bank sincronizado con Fase 8 (guardrail, spec y docs) | commit de docs posterior a `be03349` |
 | **Suite headless del guardrail** (`tests/fase8-guardrail-verificacion.html`, 97 checks) | `3e0b3f7` |
 | README y memory-bank sincronizados con la suite de Fase 8 (97 checks) | commit de docs posterior a `3e0b3f7` |
+| **Fase 9 · ciclo de vida**: purga de tablas obsoletas (Map `tablasGestionadas`), listener garantizado y suite de 50 checks | `88c99e6` |
+| README y memory-bank sincronizados con Fase 9 (ciclo de vida y 302 checks) | commit de docs posterior a `88c99e6` |
 
 ## Por confirmar
 

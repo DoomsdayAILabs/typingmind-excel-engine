@@ -2,8 +2,9 @@
 
 > Arquitectura, decisiones técnicas y rutas críticas de implementación.
 > Todo verificado leyendo el código. Los números de línea de la extensión corresponden a la versión con
-> **Fase 6 · UI** (`d876db4`, 849 líneas) y los del worker a `duckdb-worker.js` (599 líneas, sin cambios
-> desde `5067b16`); la sincronización de este documento se hace en el commit de docs posterior.
+> **Fase 6 · UI** (`d876db4`, 849 líneas) y los del worker a `duckdb-worker.js` (**661 líneas**,
+> `v1.0-phase-9+tables-lifecycle`, tras `88c99e6`); la sincronización de este documento se hace en el
+> commit de docs posterior.
 
 ## Arquitectura: 3 piezas, 2 protocolos, 1 navegador
 
@@ -31,7 +32,7 @@ GitHub Pages y jsDelivr no permiten `new Worker()` cross‑origin.
 - **Extensión:** `fetch(WORKER_PATH)` → `Blob` → `Worker(blobURL)`; la URL se revoca
   (`revokeObjectURL`) en cuanto `initDuckDB` termina (líneas 51‑93).
 - **Worker:** DuckDB‑WASM necesita su propio `mainWorker`; se crea un **segundo Blob Worker** cuyo
-  único contenido es `importScripts(bundle.mainWorker)` (worker, líneas 31‑43).
+  único contenido es `importScripts(bundle.mainWorker)` (worker, líneas 37-49).
 
 ### 2. Petición/respuesta con `requestId` y `Map` de pendientes
 `sendRequest(type, payload, timeoutMs, transferables)` (extensión, líneas 95‑106) genera ids
@@ -44,7 +45,7 @@ Parquet y Excel se envían al Worker como `ArrayBuffer` con lista de transferenc
 (`sendRequest(..., 120000, [e.target.result])`, extensión líneas 466‑477) → sin copia.
 
 ### 4. Normalización de tipos en el Worker (frontera `postMessage`)
-`normalizeValue` / `normalizeRows` (worker, líneas 61‑149):
+`normalizeValue` / `normalizeRows` (worker, líneas 67-155):
 - `BIGINT` → `Number` si está en rango seguro; si no, `string`.
 - `HugeInt`/`Decimal` detectados por patrón de 4 elementos `[a,0,0,0]` / `[a,-1,-1,-1]` → escalar.
 - `Date` → ISO 8601 (o `null` si inválida), `ArrayBuffer`/`DataView`/typed arrays → arrays, `null`
@@ -53,11 +54,12 @@ Parquet y Excel se envían al Worker como `ArrayBuffer` con lista de transferenc
 ### 5. Ciclo de vida del VFS (privacidad por diseño)
 Patrón idéntico en `loadCSV`, `loadParquet`, `loadExcel`: registrar → `CREATE OR REPLACE TABLE` →
 leer esquema/conteo/preview → **`dropFile` en el `finally`**. Los errores se guardan en `mainError`
-para no enmascarar el fallo real con el de la limpieza. Las **tablas** sobreviven; los archivos no.
+para no enmascarar el fallo real con el de la limpieza. Las **tablas** sobreviven a la carga (las
+obsoletas se purgan en la carga siguiente, ver § 7); los archivos no.
 
 ### 6. Excel multi‑hoja = "Variante A": una tabla por pestaña
 - **Hoja 0** → tabla base recibida (`excel_data`), por retrocompatibilidad con el plugin y las suites.
-- **Hojas 1..N** → `excel_data_<hoja saneada>` (`buildSheetTableName`, worker líneas 329‑359).
+- **Hojas 1..N** → `excel_data_<hoja saneada>` (`buildSheetTableName`, worker líneas 399-412).
 - Saneado: no alfanumérico → `_`, recorte de `_` extremos, prefijo `t_` si empieza por dígito,
   `hoja_<n>` si el nombre no aporta caracteres útiles.
 - **Deduplicación case‑insensitive** (DuckDB compara identificadores sin distinguir mayúsculas):
@@ -72,7 +74,31 @@ para no enmascarar el fallo real con el de la limpieza. Las **tablas** sobrevive
 - Los temporales se borran todos en el `finally`; una tabla parcial se descarta con
   `DROP TABLE IF EXISTS` best‑effort (`descartarTablaParcial`).
 
-### 7. Guardrail de solo lectura en el plugin (lista blanca + saneado)
+### 7. Ciclo de vida de las tablas gestionadas (purga entre cargas · Fase 9)
+El Worker mantiene un **`Map tablasGestionadas`** (clave: `nombre.toLowerCase()`; valor: el nombre exacto
+con el que se creó la tabla) que solo contiene las tablas creadas por una carga:
+
+- `recordarTablaGestionada(tableName)` (worker líneas 196-199) se invoca tras cada `CREATE OR REPLACE`
+  que ha tenido éxito: en `loadCSV`, en `loadParquet` y, hoja a hoja, en `loadExcel` (solo si
+  `carga.estado === "ok"`).
+- `limpiarTablasObsoletas(tablasVigentes)` (líneas 209-220) recorre `tablasGestionadas.entries()` y, si
+  la clave no figura entre las tablas creadas por el libro vigente, ejecuta
+  `DROP TABLE IF EXISTS <nombreOriginal>` y borra la clave. Es **best-effort**: si el `DROP` falla, la
+  entrada permanece en el Map y se reintenta en la carga siguiente (la carga nunca se rompe por esto).
+- Se invoca **solo tras una carga exitosa** (justo después de `if (mainError) throw mainError`), de modo
+  que un archivo ilegible o un libro sin datos conserva intacto el dataset anterior.
+- La clave en minúsculas deduplica (DuckDB compara identificadores sin distinguir mayúsculas) y el
+  **valor con la grafía original** es lo que se cita en el `DROP`, así el SQL emitido es fiel a la tabla
+  creada.
+- **Tablas del usuario:** la consola SQL ejecuta cualquier sentencia vía `executeQuery`, que no registra
+  nada; por tanto las tablas creadas a mano nunca entran en el Map y **jamás** se eliminan. Si el usuario
+  elige un nombre que colisiona con una tabla gestionada, la siguiente carga lo reemplaza
+  (`CREATE OR REPLACE`, comportamiento preexistente).
+- Caso cubierto de raíz: **hoja 0 vacía** → el libro nuevo no crea `excel_data`, así que la tabla
+  `excel_data` del archivo anterior (con datos obsoletos) se purga en esa misma carga en lugar de quedar
+  como tabla fantasma consultable por el modelo.
+
+### 8. Guardrail de solo lectura en el plugin (lista blanca + saneado)
 `implementation.js` (bloque de guardrail, líneas 35-103) valida en cadena antes de enviar nada al motor:
 
 1. **Saneado en una pasada (`saneaSQL`)** — un solo recorrido devuelve el SQL con los comentarios (de
@@ -95,9 +121,12 @@ identificadores entrecomillados ya no disparan la lista negra— y **0 falsos ne
 `USE`, `BEGIN`, las sentencias apiladas y los dos modos de ocultar el verbo tras un comentario o un
 literal—. Todo el guardrail vive **solo en el plugin**; el widget no restringe al usuario.
 
-### 8. Puente postMessage sin estado
-Cada llamada del plugin registra su propio listener y lo **retira** al resolver (evita acumulación de
-handlers). El motor responde a `event.source` o, si no hay, hace *broadcast* a todos los iframes.
+### 9. Puente postMessage sin estado
+Cada llamada del plugin registra su propio listener y lo **retira** en los tres desenlaces posibles
+(Fase 9): al emparejar la respuesta, al vencer el **timeout de 30 s** y si `window.parent.postMessage`
+lanza (en ese caso también se cancela el temporizador con `clearTimeout`). Así no se acumulan handlers
+entre invocaciones ni sobrevive ningún closure tras un timeout. El motor responde a `event.source` o, si
+no hay, hace *broadcast* a todos los iframes.
 Canal: `"tm-excel-engine"`.
 
 ### 9. Interacción de arrastre con discriminación clic vs. arrastre
@@ -151,7 +180,7 @@ fallida— no deje hojas ni plantillas del anterior.
 | Exportar CSV | `exportarCSV()` líneas 821‑842 (`tmee_resultados.csv`) |
 | Escapado Markdown | `escaparCeldaMarkdown` líneas 727‑733 (`\` → `\\`, `|` → `\|`, saltos → `<br>`) |
 | Puente IA | listener global líneas 109‑135 |
-| Tipos de mensaje del Worker | `self.onmessage` worker líneas 561‑599 |
+| Tipos de mensaje del Worker | `self.onmessage` worker líneas 622-661 |
 
 ## Contrato de datos devuelto por las cargas
 
@@ -181,6 +210,6 @@ Detalle del puente de la IA en `plugin-bridge-protocol.md`.
   La única "publicación" es servir la rama `main` por GitHub Pages.
 - `#tmee-dropzone` anuncia "`.csv, .parquet, .xlsx`" (línea 211) mientras el `accept` incluye `.xls`
   (línea 213): divergencia menor de copy, sin impacto funcional.
-- `sanitizeTableName` (worker líneas 164‑170) **no** recorta `_` de los extremos, mientras
-  `sanitizeSheetSuffix` (líneas 329‑339) sí: comportamiento intencional o descuido, por confirmar.
+- `sanitizeTableName` (worker líneas 171-177) **no** recorta `_` de los extremos, mientras
+  `sanitizeSheetSuffix` (líneas 382-392) sí: comportamiento intencional o descuido, por confirmar.
 

@@ -187,7 +187,7 @@ Via alternativa (sin IA): ejecutar el SQL a mano en el widget y pulsar
 
 | `type` | Payload | Devuelve |
 |---|---|---|
-| `initDuckDB` | `{}` | `{ version: "v1.0-phase-1b+multisheet", status: "ready", bundle }` |
+| `initDuckDB` | `{}` | `{ version: "v1.0-phase-9+tables-lifecycle", status: "ready", bundle }` |
 | `loadCSV` | `{ csvData, tableName }` | `{ procesamiento: "LOCAL_NATIVO_WORKER", formato, tabla, registros, columnas, esquema, preview }` |
 | `loadParquet` | `{ parquetData, tableName }` | idem (`formato: "PARQUET"`) |
 | `loadExcel` | `{ excelBuffer, tableName }` | idem (`formato: "EXCEL"`) + `hojas[]`, `hojas_totales`, `hojas_cargadas`, `hojas_omitidas`, `hojas_con_error` |
@@ -396,10 +396,14 @@ no recargues la página).
 - **Convivencia de tablas dentro de un mismo libro:** cada carga recrea `excel_data` (hoja 0; si no
   tiene datos, no se crea) y crea/reemplaza `excel_data_<hoja saneada>` para el resto de pestañas con
   datos, de modo que **coexisten tantas tablas como pestañas útiles tenga el libro** (hoja 0 →
-  `excel_data`; hojas 1..N → `excel_data_<hoja>`) y se pueden cruzar entre sí con `JOIN`; en cambio
-  **no elimina** las tablas sobrantes de una carga anterior (p. ej. `excel_data_Hoja2` de un libro
-  previo con más hojas). Para trabajar con dos archivos, usa `UNION` o reexporta la tabla desde la
-  consola SQL.
+  `excel_data`; hojas 1..N → `excel_data_<hoja>`) y se pueden cruzar entre sí con `JOIN`. El motor
+  **purga automáticamente** (`DROP TABLE IF EXISTS`) las tablas que gestionó una carga anterior y que
+  el libro vigente ya no materializa (p. ej. `excel_data_Hoja2` de un libro previo con más hojas), y
+  también `excel_data` cuando la hoja 0 del nuevo libro está vacía, así que no queda ninguna tabla
+  fantasma con los datos del archivo anterior. En esa purga solo entran las tablas creadas por una
+  carga: las que el usuario cree a mano en la consola SQL **nunca** se tocan, y si una carga falla se
+  conserva el dataset anterior (la limpieza solo se ejecuta tras un éxito). Para trabajar con dos
+  archivos a la vez, usa `UNION` o reexporta la tabla desde la consola SQL.
 - **Excel multi-hoja con matices:** los identificadores SQL se sanean (no alfanuméricos → `_`,
   prefijo `t_` si empiezan por dígito) y dos pestañas cuyos nombres colisionen tras el saneado
   reciben sufijo `_2`, `_3`…; el nombre original se conserva siempre en `hojas[].nombre`.
@@ -436,7 +440,8 @@ typingmind-excel-engine/
 ├── test-widget.html                  ← DEV: simulador de TypingMind (widget real, sin IA)
 ├── test-duckdb-worker.html           ← DEV: banco de pruebas del Worker
 ├── tests/
-│   ├── fase8-guardrail-verificacion.html ← DEV: 97 checks (guardrail de solo lectura, contrato postMessage)
+│   ├── fase9-ciclo-vida-verificacion.html ← DEV: 50 checks (ciclo de vida de tablas, purga de huérfanas, listener)
+│   ├── fase8-guardrail-verificacion.html ← DEV: 98 checks (guardrail de solo lectura, contrato postMessage)
 │   ├── fase6-multisheet-verificacion.html ← DEV: 85 checks (selector de hojas, multi-hoja en la UI)
 │   ├── fase5-verificacion.html       ← DEV: 44 checks (UI móvil, FAB, arrastre, inyección)
 │   ├── fase3b-verificacion.html      ← DEV: 25 checks de regresión (Markdown, CSV, puente)
@@ -453,7 +458,10 @@ Los tests son **páginas HTML autocontenidas** que publican su resultado en `doc
 (prefijo `RES:`), de modo que se pueden ejecutar sin dependencias ni frameworks:
 
 ```bash
-# Guardrail de solo lectura del plugin + contrato postMessage → 97 checks
+# Ciclo de vida de las tablas gestionadas y de los listeners del plugin → 50 checks
+node tests/run-headless.js tests/fase9-ciclo-vida-verificacion.html
+
+# Guardrail de solo lectura del plugin + contrato postMessage → 98 checks
 node tests/run-headless.js tests/fase8-guardrail-verificacion.html
 
 # Selector de hojas multi-hoja en la UI (barra, cambio de hoja, SQL conservador) → 85 checks
@@ -472,13 +480,17 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 - La suite de Fase 6 stubea `FileReader` (además de `fetch` y `Worker`): con headless y
   `--virtual-time-budget` la lectura real de archivos no siempre termina dentro de la ventana medida,
   lo que dejaba cargas a medias. El objeto de esa suite es la UI del selector, no el I/O del navegador.
+- La suite de Fase 9 carga el **Worker real** como script global (`<script src="../duckdb-worker.js">`)
+  con `importScripts` anulado y dobles de `XLSX`, `db` y `conn`: valida el ciclo de vida de las tablas
+  con un catálogo en memoria y el registro del SQL emitido, sin DuckDB y sin red.
 - `tests/run-headless.js` localiza Chrome o Edge automáticamente (o `CHROME_PATH`).
 - Capturas visuales: `tests/fase3b-visual.html`, `#min`, `#drag`, `#send`.
 - En headless las transiciones CSS no avanzan: el test de Fase 5 las desactiva para medir la
   geometría final del icono flotante (la declaración de la transición se verifica sobre el CSS).
 - Comprobación rápida de sintaxis: `node --check typingmind-excel-engine-v1.0.js`.
 
-Estado verificado de esta entrega: `97/97` checks de Fase 8 (guardrail de solo lectura y contrato
+Estado verificado de esta entrega (**302 checks**): `50/50` de Fase 9 (ciclo de vida de las tablas
+gestionadas y de los listeners del plugin), `98/98` de Fase 8 (guardrail de solo lectura y contrato
 postMessage), `85/85` de Fase 6 (selector de hojas multi-hoja en la UI), `44/44` de Fase 5 y `25/25`
 de regresión Fase 3B.
 
@@ -513,7 +525,8 @@ de regresión Fase 3B.
 | Fase 6 | **Documentación y empaquetado**: README, guía de instalación y carpeta `plugin/` definitiva |
 | Multi-hoja | Iteración de `workbook.SheetNames`: **una tabla por pestaña** (`excel_data_<hoja saneada>`) con omisión/reporte tolerante de hojas vacías (`v1.0-phase-1b+multisheet`) |
 | Fase 6 · UI | **Selector de hojas en el widget**: desplegable nativo para alternar entre las tablas `excel_data_<hoja>` sin recargar el archivo, sustitución conservadora del SQL editado y metadato de columnas de la hoja activa (`tests/fase6-multisheet-verificacion.html`, 85 checks) |
-| Fase 8 · Guardrail | **Blindaje contra falsos positivos/negativos** del guardrail de solo lectura (saneado de literales + lista blanca + lista negra ampliada): **0 FP / 0 FN** sobre el banco de 67 consultas y suite headless de **97 checks** (`tests/fase8-guardrail-verificacion.html`) |
+| Fase 8 · Guardrail | **Blindaje contra falsos positivos/negativos** del guardrail de solo lectura (saneado de literales + lista blanca + lista negra ampliada): **0 FP / 0 FN** sobre el banco de 67 consultas y suite headless de **98 checks** (`tests/fase8-guardrail-verificacion.html`) |
+| Fase 9 · Ciclo de vida | **Purga automática de tablas obsoletas** en el Worker (Map `tablasGestionadas` con clave en minúsculas → nombre original, `DROP TABLE IF EXISTS` solo tras una carga exitosa, respetando las tablas del usuario) + **listener del plugin retirado siempre** (respuesta, timeout de 30 s o fallo de `postMessage`) y suite headless de **50 checks** (`tests/fase9-ciclo-vida-verificacion.html`). `WORKER_VERSION` pasa a `v1.0-phase-9+tables-lifecycle` |
 
 ---
 

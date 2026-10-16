@@ -139,12 +139,15 @@ Notas de implementación:
 - El `requestId` lo genera el plugin (`req_<timestamp>_<aleatorio>`) y el motor lo devuelve intacto:
   así se emparejan respuestas aunque haya varias consultas en vuelo.
 - Cada llamada registra y **retira** su propio listener (`onMessage`), por lo que no se acumulan
-  handlers entre invocaciones.
+  handlers entre invocaciones. La retirada está **garantizada en los tres desenlaces** (Fase 9): al
+  emparejar la respuesta, al vencer el timeout de 30 s y si `window.parent.postMessage` lanza (en ese
+  caso también se cancela el temporizador).
 - La función **debe** llamarse `query_excel_data` en el nivel superior del código: es un requisito
   de TypingMind (el nombre de la función tiene que coincidir con `openaiSpec.name`). Poner un
   `return` suelto fuera de la función provoca un `SyntaxError` al guardar el plugin.
 - Timeout de 30 s: si el motor no responde (extensión no cargada, sin datos), el plugin devuelve un
-  mensaje de error legible para que el LLM lo comunique o lo reintente.
+  mensaje de error legible para que el LLM lo comunique o lo reintente, y **retira el listener en ese
+  mismo instante**: una respuesta tardía del motor ya no encuentra ningún handler que la atienda.
 
 ## Instalación
 
