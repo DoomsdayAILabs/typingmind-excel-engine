@@ -54,7 +54,7 @@ Excel multi‑hoja: **una tabla por pestaña** (`excel_data` + `excel_data_<hoja
 - Widget inyectado, badge de estado y estado final **"Motor Listo"**.
 - Carga correcta de los 4 formatos con metadatos, esquema y preview de 10 filas.
 - `query_excel_data` devuelve Markdown con datos reales (máx. 50 filas).
-- Suites de regresión en verde: `85/85` (Fase 6 · selector multi‑hoja), `44/44` (Fase 5) y `25/25` (Fase 3B).
+- Suites automatizadas en verde (**7 suites, 363 checks**): `22/22` (Fase 10 contra DuckDB-WASM real), `39/39` (runner SQL sintético), `50/50` (Fase 9), `98/98` (Fase 8), `85/85` (Fase 6 · selector multihoja), `44/44` (Fase 5) y `25/25` (Fase 3B).
 
 ## Documentación y trazabilidad
 

@@ -310,7 +310,9 @@ python -m http.server 8080
 
 - `test-widget.html` → simulador de TypingMind con el widget real.
 - `test-duckdb-worker.html` → banco de pruebas del Worker (carga y consulta sin UI).
-- `tests/sql-test-runner.html` → batería de consultas SQL contra los datos de ejemplo.
+- `tests/sql-test-runner.html` → batería SQL con datasets sintéticos en memoria; con `?headless=1` y
+  `--serve` publica `RES:` y corre sin interacción (39 checks).
+- `tests/fase10-duckdb-real-verificacion.html` → verificación real con DuckDB-WASM y SheetJS (22 checks, `--serve`).
 
 > Con `file://` los Workers y los módulos ES quedan bloqueados por el navegador: usa siempre un
 > servidor local (`http://localhost`) para las pruebas.
@@ -440,13 +442,14 @@ typingmind-excel-engine/
 ├── test-widget.html                  ← DEV: simulador de TypingMind (widget real, sin IA)
 ├── test-duckdb-worker.html           ← DEV: banco de pruebas del Worker
 ├── tests/
+│   ├── fase10-duckdb-real-verificacion.html ← DEV: 22 checks con DuckDB-WASM y SheetJS reales (--serve)
 │   ├── fase9-ciclo-vida-verificacion.html ← DEV: 50 checks (ciclo de vida de tablas, purga de huérfanas, listener)
 │   ├── fase8-guardrail-verificacion.html ← DEV: 98 checks (guardrail de solo lectura, contrato postMessage)
 │   ├── fase6-multisheet-verificacion.html ← DEV: 85 checks (selector de hojas, multi-hoja en la UI)
 │   ├── fase5-verificacion.html       ← DEV: 44 checks (UI móvil, FAB, arrastre, inyección)
 │   ├── fase3b-verificacion.html      ← DEV: 25 checks de regresión (Markdown, CSV, puente)
 │   ├── fase3b-visual.html            ← DEV: capturas visuales (#min / #drag / #send)
-│   ├── sql-test-runner.html          ← DEV: batería de consultas SQL
+│   ├── sql-test-runner.html          ← DEV: 39 checks SQL sobre DuckDB-WASM real con datasets sintéticos (--serve)
 │   └── run-headless.js               ← DEV: runner de los tests en Chrome/Edge headless
 ```
 
@@ -460,6 +463,12 @@ Los tests son **páginas HTML autocontenidas** que publican su resultado en `doc
 ```bash
 # Ciclo de vida de las tablas gestionadas y de los listeners del plugin → 50 checks
 node tests/run-headless.js tests/fase9-ciclo-vida-verificacion.html
+
+# Fase 10 · verificación real con DuckDB-WASM y SheetJS (servidor efímero, tiempo real) → 22 checks
+node tests/run-headless.js tests/fase10-duckdb-real-verificacion.html --serve --budget=180000
+
+# Fase 10 · batería SQL sobre datasets sintéticos en memoria (servidor efímero) → 39 checks
+node tests/run-headless.js "tests/sql-test-runner.html?headless=1" --serve --budget=180000
 
 # Guardrail de solo lectura del plugin + contrato postMessage → 98 checks
 node tests/run-headless.js tests/fase8-guardrail-verificacion.html
@@ -483,16 +492,29 @@ node tests/run-headless.js tests/fase5-verificacion.html 900,760 --all
 - La suite de Fase 9 carga el **Worker real** como script global (`<script src="../duckdb-worker.js">`)
   con `importScripts` anulado y dobles de `XLSX`, `db` y `conn`: valida el ciclo de vida de las tablas
   con un catálogo en memoria y el registro del SQL emitido, sin DuckDB y sin red.
+- **`--serve`**: el runner levanta un servidor HTTP estático efímero (`127.0.0.1` con puerto libre, sin
+  dependencias) y abre la página en `http://…` en vez de `file://`. Es necesario para las suites que
+  requieren un origen real (módulos ES, `new Worker()` y descargas de jsDelivr) y habilita el canal
+  **`POST /__report`**: la página envía su informe al terminar y el runner cierra Chrome al recibirlo.
+  Sin `--serve`, todo sigue igual que antes (`file://`).
+- **`--budget=<ms>`**: presupuesto de tiempo virtual de Chrome (30000 por defecto) y, en modo de tiempo
+  real, tiempo máximo de espera del informe. Las 2 suites de Fase 10 se lanzan con `--budget=180000`.
+- Las **5 suites rápidas** (Fase 9, 8, 6, 5 y 3B) siguen corriendo en `file://` con tiempo virtual: son
+  instantáneas y no necesitan red. Las **2 suites reales** (Fase 10 y el runner SQL) declaran
+  `<meta name="tmee-live">` y usan **tiempo real**: con tiempo virtual, los temporizadores de la página se
+  adelantarían al Worker que compila DuckDB-WASM.
 - `tests/run-headless.js` localiza Chrome o Edge automáticamente (o `CHROME_PATH`).
 - Capturas visuales: `tests/fase3b-visual.html`, `#min`, `#drag`, `#send`.
 - En headless las transiciones CSS no avanzan: el test de Fase 5 las desactiva para medir la
   geometría final del icono flotante (la declaración de la transición se verifica sobre el CSS).
 - Comprobación rápida de sintaxis: `node --check typingmind-excel-engine-v1.0.js`.
 
-Estado verificado de esta entrega (**302 checks**): `50/50` de Fase 9 (ciclo de vida de las tablas
-gestionadas y de los listeners del plugin), `98/98` de Fase 8 (guardrail de solo lectura y contrato
-postMessage), `85/85` de Fase 6 (selector de hojas multi-hoja en la UI), `44/44` de Fase 5 y `25/25`
-de regresión Fase 3B.
+Estado verificado de esta entrega (**363 checks en 7 suites**): `22/22` de Fase 10 contra DuckDB-WASM y
+SheetJS reales (purga de tablas, tabla fantasma, tabla del usuario, case-insensitivity e idempotencia),
+`39/39` del runner SQL sintético (1 self-test + 20 consultas TEUs + 1 carga + 17 consultas
+Requerimiento), `50/50` de Fase 9 (ciclo de vida de las tablas gestionadas y de los listeners del plugin),
+`98/98` de Fase 8 (guardrail de solo lectura y contrato postMessage), `85/85` de Fase 6 (selector de hojas
+multi-hoja en la UI), `44/44` de Fase 5 y `25/25` de regresión Fase 3B.
 
 ---
 
@@ -527,6 +549,7 @@ de regresión Fase 3B.
 | Fase 6 · UI | **Selector de hojas en el widget**: desplegable nativo para alternar entre las tablas `excel_data_<hoja>` sin recargar el archivo, sustitución conservadora del SQL editado y metadato de columnas de la hoja activa (`tests/fase6-multisheet-verificacion.html`, 85 checks) |
 | Fase 8 · Guardrail | **Blindaje contra falsos positivos/negativos** del guardrail de solo lectura (saneado de literales + lista blanca + lista negra ampliada): **0 FP / 0 FN** sobre el banco de 67 consultas y suite headless de **98 checks** (`tests/fase8-guardrail-verificacion.html`) |
 | Fase 9 · Ciclo de vida | **Purga automática de tablas obsoletas** en el Worker (Map `tablasGestionadas` con clave en minúsculas → nombre original, `DROP TABLE IF EXISTS` solo tras una carga exitosa, respetando las tablas del usuario) + **listener del plugin retirado siempre** (respuesta, timeout de 30 s o fallo de `postMessage`) y suite headless de **50 checks** (`tests/fase9-ciclo-vida-verificacion.html`). `WORKER_VERSION` pasa a `v1.0-phase-9+tables-lifecycle` |
+| Fase 10 · Verificación real y SQL | **Modo `--serve` en `tests/run-headless.js`** (servidor HTTP efímero + canal `POST /__report` en tiempo real) y **verificación empírica de la Fase 9 contra DuckDB-WASM real** (`tests/fase10-duckdb-real-verificacion.html`, 22 checks: purga de las tablas huérfanas, eliminación real de la tabla fantasma `excel_data`, tabla del usuario preservada, case-insensitivity del `DROP` entrecomillado e idempotencia). Rehabilitación de `tests/sql-test-runner.html` con **generadores sintéticos deterministas** y formato `RES:` (**39 checks**: 1 self-test + 20 TEUs + 1 carga + 17 Requerimiento), ya sin archivos externos ni interacción manual |
 
 ---
 

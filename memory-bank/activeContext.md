@@ -1,9 +1,22 @@
 # Active Context — TypingMind Excel Engine
 
 > Foco de trabajo actual, cambios recientes, siguientes pasos y decisiones activas.
-> Última actualización: **2026‑10‑01** (Fase 9 cerrada: ciclo de vida de tablas y listeners con `tests/fase9-ciclo-vida-verificacion.html` de 50 checks; batería de 5 suites con 302 checks; commits `88c99e6` + docs).
+> Última actualización: **2026‑10‑01** (Fase 10 cerrada: 7 suites y 363 checks; verificación real de la Fase 9 contra DuckDB-WASM con `--serve`; commits `f7e9510` + docs).
 
 ## Foco actual
+
+**Fase 10 completada: verificación real y runner SQL desatendido.** `tests/run-headless.js` gana `--serve`
+(servidor HTTP estático efímero en `127.0.0.1` con puerto libre, sin dependencias), `--budget=<ms>` y el
+canal **`POST /__report`**: las suites con trabajo asíncrono real declaran `<meta name="tmee-live">` y el
+runner las ejecuta en **tiempo real** (sin `--dump-dom` ni tiempo virtual, que adelantaría los
+temporizadores de la página al Worker). Con eso, `tests/fase10-duckdb-real-verificacion.html` (**22/22**)
+verifica empíricamente la Fase 9 contra **DuckDB-WASM 1.29.0 y SheetJS 0.18.5 reales**: purga real de
+`excel_data_Resumen`, eliminación real de la tabla fantasma `excel_data` (`SELECT` falla con *Catalog
+Error*), tabla del usuario preservada, case-insensitivity del `DROP` entrecomillado e idempotencia. Además,
+`tests/sql-test-runner.html` deja de ser manual: **generadores sintéticos deterministas** (18 filas TEUs con
+self-test aritmético de las 8 constantes + 120 filas Requerimiento), `?headless=1` con `RES:` y **39
+checks** (1 self-test + 20 TEUs + 1 carga + 17 Requerimiento) contra DuckDB-WASM real. Batería total:
+**7 suites y 363 checks**.
 
 **Fase 9 completada: ciclo de vida de tablas y listeners.** El Worker mantiene un `Map tablasGestionadas`
 (clave en minúsculas → nombre exacto con el que se creó) y purga con `DROP TABLE IF EXISTS` las tablas que
@@ -38,14 +51,17 @@ Plugin IA y UI).
 
 ## Estado del repositorio (verificado en esta sesión)
 
+- Commit del producto (Fase 10 · verificación real y SQL): **`f7e9510`** — `test(fase10): servidor efimero
+  en run-headless, runner SQL sintetico (39 checks) y suite DuckDB real (22 checks)` (3 archivos,
+  +652 / -104; incluye `tests/fase10-duckdb-real-verificacion.html`).
 - Commit del producto (Fase 9 · ciclo de vida): **`88c99e6`** — `feat(lifecycle): purga automatica de
   tablas obsoletas en worker, limpieza de listener en plugin y suite Fase 9 (50 checks)` (4 archivos,
   +454 / -5; incluye la suite nueva `tests/fase9-ciclo-vida-verificacion.html`).
 - Commit del producto (Fase 8 · guardrail): **`be03349`** — `feat(plugin): guardrail robusto de solo
   lectura con lista blanca y saneado de literales (Fase 8)` (1 archivo, +81 / -2).
 - Commits previos del producto: **`686a46e`** (Fase 7 · pin de SheetJS `0.18.5`) y **`d876db4`** (Fase 6 · UI).
-- Este documento se actualiza en el commit `docs: sincronizar README y memory-bank con Fase 9 (ciclo de
-  vida y 302 checks)`, inmediatamente posterior a `88c99e6`.
+- Este documento se actualiza en el commit `docs: sincronizar README y memory-bank con Fase 10 (7 suites,
+  363 checks)`, inmediatamente posterior a `f7e9510`.
 - **Working tree limpio** y rama `main` sincronizada con `origin/main` tras el push.
 - Sin `package.json`, sin CI, sin `.github/`. Repo estático servido por GitHub Pages.
 - La extensión se mantiene en **849 líneas**; el Worker pasa a **661 líneas** al añadir la constante
@@ -56,6 +72,8 @@ Plugin IA y UI).
 | Comprobación | Comando | Resultado |
 |---|---|---|
 | Sintaxis (3 archivos) | `node --check duckdb-worker.js` · `plugin/implementation.js` · `typingmind-excel-engine-v1.0.js` | OK (exit 0 ×3) |
+| Suite Fase 10 (real) | `node tests/run-headless.js tests/fase10-duckdb-real-verificacion.html --serve --budget=180000` | **22/22 OK** (exit 0) |
+| Runner SQL sintético | `node tests/run-headless.js "tests/sql-test-runner.html?headless=1" --serve --budget=180000` | **39/39 OK** (exit 0) |
 | Suite Fase 9 | `node tests/run-headless.js tests/fase9-ciclo-vida-verificacion.html` | **50/50 OK** (exit 0) |
 | Suite Fase 8 | `node tests/run-headless.js tests/fase8-guardrail-verificacion.html` | **98/98 OK** (exit 0) |
 | Suite Fase 6 | `node tests/run-headless.js tests/fase6-multisheet-verificacion.html` | **85/85 OK** (exit 0) |
@@ -78,7 +96,7 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 1. **El Memory Bank vive en `memory-bank/` en la raíz del repo** (6 archivos núcleo + 2 de contexto:
    `plugin-bridge-protocol.md` y `testing-strategy.md`).
 2. **Regla de oro heredada del README (§ Contribuir):** no tocar `typingmind-excel-engine-v1.0.js` ni
-   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **cinco**: Fase 9, Fase 8, Fase 6, Fase 5
+   `duckdb-worker.js` sin dejar **las suites de `tests/` en verde** (hoy son **siete**: Fase 10, el runner SQL, Fase 9, Fase 8, Fase 6, Fase 5
    y Fase 3B); y mantener sincronizados `README.md` (producto) y `plugin/README.md` (integración IA).
 3. **La retrocompatibilidad del nombre `excel_data` es intocable**: el plugin, las suites SQL y la
    documentación dependen de que la hoja 0 conserve el nombre base.
@@ -104,8 +122,9 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
 1. ~~**Endurecer el guardrail del plugin**~~ **Completado en `be03349` (Fase 8):** lista blanca + saneado
    de comentarios y literales + lista negra ampliada (escritura, DDL, DCL y administración) + bloqueo de
    sentencias apiladas; 0 FP / 0 FN sobre el banco de 67 consultas.
-2. **Cerrar el hueco de la suite SQL manual:** incorporar fixtures mínimos (o generar un CSV/XLSX en
-   memoria) para que `tests/sql-test-runner.html` (38 casos) sea ejecutable en headless.
+2. ~~**Cerrar el hueco de la suite SQL manual:** incorporar fixtures mínimos (o generar un CSV/XLSX en
+   memoria) para que `tests/sql-test-runner.html` sea ejecutable en headless.~~ **Completado en
+   `f7e9510` (Fase 10):** datasets sintéticos deterministas + `?headless=1 --serve` (**39 checks**).
 3. **Decidir si se restaura `index.html`** como historial de versiones descargables: ya no se anuncia
    en el README, así que pasó de ser una deriva documental a una decisión de producto.
 4. **Título de `tests/sql-test-runner.html`:** sigue anunciando "v0.4.20" con el producto en v1.0 (la
@@ -157,6 +176,16 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
   tramo (`sqlEmitido.slice(marca)`) es lo que hace determinista la aserción.
 - **BOM y CRLF sobreviven a las herramientas de edición por anclas:** en esta sesión bastó con comprobar
   el BOM y el recuento CRLF/LF después de cada archivo tocado, sin reescribir con `ReadAllText`.
+- **El tiempo virtual de Chrome es incompatible con trabajo asíncrono real:** con `--dump-dom
+  --virtual-time-budget`, los `setTimeout` de la página se disparan mientras el Worker sigue compilando
+  DuckDB-WASM (el spike falló justo así). De ahí el modo de **tiempo real**: `--serve` +
+  `<meta name="tmee-live">` + informe por `POST /__report`; el runner espera el informe y cierra Chrome.
+- **`new Worker("./duckdb-worker.js")` no funciona en `file://`:** el servidor efímero de `--serve` es lo
+  que permite instanciar el Worker real y descargar DuckDB-WASM y SheetJS desde jsDelivr.
+- **`[regex]::Replace` interpreta `$` y `${…}`:** al inyectar código JS con plantillas literales por
+  PowerShell conviene evitar `${…}` en el texto de reemplazo (se usó concatenación con `+`).
+- **El runner SQL necesitaba un self-test aritmético:** atar el dataset sintético a las 8 constantes de la
+  batería convierte cualquier edición descuidada de una fila en un fallo explícito, no en un falso verde.
 
 ## Por confirmar
 
@@ -177,9 +206,9 @@ Ver detalle en `testing-strategy.md` y `techContext.md`.
   ampliada + bloqueo de apiladas) con 0 FP / 0 FN sobre el banco de 67 consultas, pero sigue siendo
   heurístico. Queda como línea futura el endurecimiento estructural: una conexión DuckDB restringida para
   el plugin, que hoy comparte conexión con la consola manual del usuario.
-- **Purga de tablas validada con dobles (Fase 9):** la suite comprueba la lógica con un catálogo en memoria
-  y el registro del SQL emitido; la verificación contra DuckDB real (`SHOW TABLES` sin huérfanas y `DROP` de
-  un identificador entrecomillado) queda pendiente de una pasada manual.
+- ~~**Purga de tablas validada con dobles (Fase 9).**~~ **Resuelto en Fase 10 (`f7e9510`):** la suite
+  `tests/fase10-duckdb-real-verificacion.html` verifica la purga contra **DuckDB-WASM real** (22 checks),
+  así que el riesgo queda cerrado; el runner SQL añade además 39 checks de consultas analíticas reales.
 - **Datos de ejemplo ausentes**: la suite SQL más completa (**38 casos** en dos baterías) requiere
   selección manual de archivos que ya no están en el repo → no es ejecutable sin intervención humana.
 - **Selector silencioso con una sola hoja cargada:** si el libro tiene una única hoja con datos, la

@@ -3,21 +3,30 @@
 > Qué funciona, qué falta, estado actual e issues conocidos.
 > Estado evaluado el **2026‑10‑01**; commits del producto **`d876db4`** (Fase 6 · UI desplegada),
 > **`be03349`** (Fase 8 · guardrail robusto del plugin: saneado + lista blanca + lista negra ampliada) y
-> **`3e0b3f7`** (suite headless del guardrail) y **`88c99e6`** (Fase 9 · ciclo de vida: purga de tablas
-> obsoletas, listener garantizado y suite de 50 checks) más el commit de documentación que sincroniza este Memory Bank.
+> **`3e0b3f7`** (suite headless del guardrail), **`88c99e6`** (Fase 9 · ciclo de vida: purga de tablas
+> obsoletas, listener garantizado y suite de 50 checks) y **`f7e9510`** (Fase 10 · verificación real con
+> DuckDB-WASM, `--serve` en el runner y runner SQL sintético de 39 checks) más el commit de documentación
+> que sincroniza este Memory Bank.
 
 ## Estado actual
 
 **El soporte multi-hoja está 100 % cerrado en las tres piezas (Worker, Plugin IA y UI Widget) y las
 dependencias externas quedan fijadas.** SheetJS pasa de etiqueta flotante a **`0.18.5`** (`686a46e`),
 así que DuckDB‑WASM `1.29.0` y SheetJS `0.18.5` son las dos únicas versiones que carga el Worker. Las
-cinco suites headless están en verde (**50/50**, 98/98, 85/85, 44/44 y 25/25 = 302 checks) y GitHub Pages sirve la build de Fase 6
+siete suites headless están en verde (**22/22** de Fase 10 contra DuckDB-WASM real, **39/39** del runner SQL
+sintético, 50/50, 98/98, 85/85, 44/44 y 25/25 = **363 checks**) y GitHub Pages sirve la build de Fase 6
 (cabecera “Fase 6” en la extensión, que no cambió en Fase 7). El README (**551 líneas**) ya no describe
 archivos inexistentes, declara la licencia MIT oficial y sus listas de sentencias permitidas y de
 descubrimiento de esquema coinciden con el plugin real. El repositorio está **limpio y sincronizado**
 con `origin/main`. **Fase 8 (`be03349`):** el guardrail del plugin pasa de lista negra textual a cuatro
 comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo de apiladas), con
-**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas, ya empaquetado en la suite headless `tests/fase8-guardrail-verificacion.html` (**98/98**). **Fase 9 (`88c99e6`):** el Worker mantiene un `Map tablasGestionadas` (clave en minúsculas -> nombre exacto) y purga (`DROP TABLE IF EXISTS`, solo tras una carga exitosa) las tablas gestionadas que el libro vigente ya no materializa —incluida `excel_data` si la hoja 0 del nuevo libro está vacía— sin tocar las tablas creadas a mano en la consola SQL; el plugin retira su listener en los tres desenlaces (respuesta, timeout de 30 s y fallo de `postMessage`). Suite nueva de **50 checks** (`tests/fase9-ciclo-vida-verificacion.html`).
+**0 falsos positivos y 0 falsos negativos** sobre un banco de 67 consultas, ya empaquetado en la suite headless `tests/fase8-guardrail-verificacion.html` (**98/98**). **Fase 9 (`88c99e6`):** el Worker mantiene un `Map tablasGestionadas` (clave en minúsculas -> nombre exacto) y purga (`DROP TABLE IF EXISTS`, solo tras una carga exitosa) las tablas gestionadas que el libro vigente ya no materializa —incluida `excel_data` si la hoja 0 del nuevo libro está vacía— sin tocar las tablas creadas a mano en la consola SQL; el plugin retira su listener en los tres desenlaces (respuesta, timeout de 30 s y fallo de `postMessage`). Suite nueva de **50 checks** (`tests/fase9-ciclo-vida-verificacion.html`). **Fase 10 (`f7e9510`):**
+`tests/run-headless.js` gana `--serve` (servidor HTTP efímero en `127.0.0.1` con puerto libre + canal
+`POST /__report`) y `--budget=<ms>`; las suites con red y Worker real declaran `<meta name="tmee-live">` y
+se ejecutan en **tiempo real** (el tiempo virtual adelantaba los temporizadores de la página al Worker que
+compila DuckDB-WASM). Con ello, `tests/fase10-duckdb-real-verificacion.html` (**22/22**) verifica
+empíricamente la Fase 9 contra DuckDB-WASM 1.29.0 y SheetJS 0.18.5 reales, y `tests/sql-test-runner.html`
+deja de ser manual: datasets sintéticos deterministas + `?headless=1 --serve` (**39 checks**).
 
 ## Qué funciona (verificado)
 
@@ -77,6 +86,8 @@ comprobaciones en cadena (saneado, lista blanca, lista negra ampliada y bloqueo 
 
 | Suite | Checks | Resultado |
 |---|---|---|
+| `tests/fase10-duckdb-real-verificacion.html` | 22 | **OK 22 / FAIL 0** |
+| `tests/sql-test-runner.html?headless=1` | 39 | **OK 39 / FAIL 0** |
 | `tests/fase9-ciclo-vida-verificacion.html` | 50 | **OK 50 / FAIL 0** |
 | `tests/fase8-guardrail-verificacion.html` | 98 | **OK 98 / FAIL 0** |
 | `tests/fase6-multisheet-verificacion.html` | 85 | **OK 85 / FAIL 0** |
@@ -110,22 +121,22 @@ detectado como evidencia del proceso:
 | 94‑95 | el plugin permite solo `SELECT`, `WITH` y `EXPLAIN` | **corregido en `686a46e`**: el README (líneas 379 y 488) y `plugin/README.md` ya documentan `SHOW` y `DESCRIBE` junto a `SELECT`/`WITH`/`EXPLAIN` (la lista negra no los bloquea) |
 | 101‑102 y 336‑337 | el modelo empieza con `SELECT * FROM excel_data LIMIT 1;` para descubrir columnas | **corregido en `686a46e`**: el README ya ordena `information_schema.tables` / `SHOW TABLES` y después `information_schema.columns` / `DESCRIBE`, igual que el spec |
 
-Deriva adicional fuera del README: `tests/sql-test-runner.html` mantiene el título
-**"Batería de pruebas SQL — v0.4.20"** (línea 30) aunque el producto es v1.0.
+Deriva adicional fuera del README: ~~`tests/sql-test-runner.html` mantenía el título "Batería de pruebas SQL — v0.4.20"~~ **corregido en `f7e9510` a `v1.0 (Fase 10)`**.
 
 **Estado de la corrección:** las **siete filas de la tabla están corregidas**. Las dos últimas se
-cerraron en `686a46e` (lista de sentencias permitidas y orden de descubrimiento del esquema). La única
-deriva documental que queda es el título desactualizado de `sql-test-runner.html`.
+cerraron en `686a46e` (lista de sentencias permitidas y orden de descubrimiento del esquema) y el título
+de `sql-test-runner.html` se actualizó a `v1.0 (Fase 10)` en `f7e9510`, así que **no queda ninguna deriva
+documental conocida**.
 
 ## Qué falta / pendientes reales
 
-1. **`tests/sql-test-runner.html`:** necesita que el usuario **seleccione a mano** `TEUs.xlsx` o
-   `RequerimientoPrueba`; esos datos de ejemplo ya no están en el repo, así que la batería SQL más
-   amplia (**38 casos**: 20 + 18) **no es automatizable hoy**. Ver `testing-strategy.md`.
+1. ~~**`tests/sql-test-runner.html`:** necesitaba que el usuario **seleccionase a mano** `TEUs.xlsx` o
+   `RequerimientoPrueba`, y esos datos ya no están en el repo (**38 casos**: 20 + 18).~~ **Resuelto en
+   `f7e9510` (Fase 10):** datasets sintéticos en memoria (18 filas TEUs + 120 Requerimiento), headless con
+   `?headless=1 --serve` y **39 checks** (37 consultas + 1 carga + 1 self-test). Ver `testing-strategy.md`.
 2. **Versión del producto:** el Worker declara `v1.0-phase-9+tables-lifecycle` mientras el producto es
    `1.0`; no hay un único identificador de versión.
-3. **Título de `tests/sql-test-runner.html`:** anuncia "Batería de pruebas SQL — v0.4.20" con el
-   producto en v1.0.
+3. ~~**Título de `tests/sql-test-runner.html`:** anunciaba "Batería de pruebas SQL — v0.4.20".~~ **Corregido en `f7e9510`:** ahora dice `v1.0 (Fase 10)`.
 4. ~~**SheetJS sin pin de versión** en `duckdb-worker.js` (línea 6).~~ **Completado en `686a46e`:**
    fijado a `0.18.5` con `SHEETJS_PACKAGE` (worker, línea 5) e `importScripts(SHEETJS_PACKAGE)` (línea
    7). Queda como riesgo residual la ausencia de SRI (ver `techContext.md`).
@@ -180,6 +191,8 @@ deriva documental que queda es el título desactualizado de `sql-test-runner.htm
 | README y memory-bank sincronizados con la suite de Fase 8 (97 checks) | commit de docs posterior a `3e0b3f7` |
 | **Fase 9 · ciclo de vida**: purga de tablas obsoletas (Map `tablasGestionadas`), listener garantizado y suite de 50 checks | `88c99e6` |
 | README y memory-bank sincronizados con Fase 9 (ciclo de vida y 302 checks) | commit de docs posterior a `88c99e6` |
+| **Fase 10 · verificación real**: `--serve` en `run-headless.js`, suite DuckDB real (22 checks) y runner SQL sintético (39 checks) | `f7e9510` |
+| README y memory-bank sincronizados con Fase 10 (7 suites, 363 checks) | commit de docs posterior a `f7e9510` |
 
 ## Por confirmar
 
